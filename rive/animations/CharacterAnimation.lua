@@ -1,8 +1,10 @@
 -- CharacterAnimation: ヤチヨベースのヒエラルキー制御スクリプト
 -- 機能: ① 呼吸する処理   ② カーソルを目が追う処理   ③ ランダムまばたき
+--       ④ 前髪の上部にカーソルを置くと笑顔(smile)になる処理
 --
--- ③ まばたきは eyes グループに追加したsmileまつ毛を不透明度で切り替える:
+-- ③④ まばたき/笑顔は eyes グループに追加したsmileまつ毛を不透明度で切り替える:
 --    通常まつ毛+虹彩+白目 (blinkOpen) ↔ smileまつ毛 (blinkSmile) を直接クロスフェード。
+--    ④の判定領域は EYE_WORLD と同じポインタ座標系で指定する(HAIR_* 定数)。
 --
 -- ※ ベースアートボード(0-12223)の "PointerHitArea" シェイプ(0-43545)に
 --   アタッチして使用する。これは (0,0)〜(1024,1024) を覆う実質透明
@@ -46,6 +48,7 @@ type CharacterAnimation = {
     blinking: boolean,    -- まばたき中か
     blinkT: number,       -- まばたき開始からの経過秒
     blinkTimer: number,   -- 次のまばたきまでの残り秒
+    smileHover: number,   -- 前髪ホバーによるsmile量 (0〜1, なめらかに補間)
 }
 
 -- 目パーツの基準ローカル座標 (eyes グループ相対)
@@ -69,7 +72,7 @@ local EYE_WORLD_X = 0.0
 local EYE_WORLD_Y = -180.0
 
 -- 目追従パラメータ
-local EYE_MAX_OFFSET = 7.0    -- 瞳が動ける最大ピクセル量
+local EYE_MAX_OFFSET = 4.5    -- 瞳が動ける最大ピクセル量
 local EYE_REACH      = 250.0  -- この距離で追従量が最大(=±1)になる
 local EYE_LERP_SPEED = 5.0    -- 追従の滑らかさ(高いほど俊敏)
 
@@ -85,7 +88,15 @@ local BLINK_TOTAL = BLINK_CLOSE + BLINK_HOLD + BLINK_OPEN
 local BLINK_MIN   = 2.0      -- 次のまばたきまでの最短間隔(秒)
 local BLINK_MAX   = 6.0      -- 次のまばたきまでの最長間隔(秒)
 
--- 次のまばたきまでの待ち時間をランダムに決める
+-- 前髪の上部ホバーでsmileにする判定領域(EYE_WORLD と同じポインタ座標系)
+-- front hair のアートボード境界 x[374,632] y[104,635] を eyes基準(505,464)で換算した上部
+local HAIR_X_MIN   = -135.0  -- 前髪領域の左端
+local HAIR_X_MAX   =  130.0  -- 前髪領域の右端
+local HAIR_Y_TOP   = -420.0  -- 前髪の上端(これより下から判定)
+local HAIR_Y_BOT   = -280.0  -- 目の少し上まで(ここより上が「上部分」)
+local SMILE_LERP   = 12.0    -- ホバーsmileの反応速度(高いほど俊敏)
+
+--次のまばたきまでの待ち時間をランダムに決める
 local function nextBlinkInterval(): number
     return BLINK_MIN + math.random() * (BLINK_MAX - BLINK_MIN)
 end
@@ -146,6 +157,7 @@ function init(self: CharacterAnimation, context: Context): boolean
     self.blinking   = false
     self.blinkT     = 0
     self.blinkTimer = nextBlinkInterval()
+    self.smileHover = 0
     if self.vmBlinkOpen  then self.vmBlinkOpen.value  = 1.0 end
     if self.vmBlinkSmile then self.vmBlinkSmile.value = 0.0 end
 
@@ -190,6 +202,14 @@ function advance(self: CharacterAnimation, seconds: number): boolean
     if self.vmEyebrowLX  then self.vmEyebrowLX.value  = BROW_LX + ox * 0.15 end
     if self.vmEyebrowLY  then self.vmEyebrowLY.value  = BROW_LY + oy * 0.1  end
 
+    -- ===== ④ 前髪の上部ホバーで笑顔 =====
+    -- カーソルが前髪上部の矩形内にあるか判定(mouseX/Y は EYE_WORLD と同じ座標系)
+    local overHair = self.mouseX >= HAIR_X_MIN and self.mouseX <= HAIR_X_MAX
+                 and self.mouseY >= HAIR_Y_TOP and self.mouseY <= HAIR_Y_BOT
+    -- ホバーsmileを目標値へなめらかに補間
+    local sa = math.min(SMILE_LERP * seconds, 1.0)
+    self.smileHover += ((if overHair then 1.0 else 0.0) - self.smileHover) * sa
+
     -- ===== ③ ランダムまばたき (通常→smile→通常) =====
     if self.blinking then
         self.blinkT += seconds
@@ -198,7 +218,8 @@ function advance(self: CharacterAnimation, seconds: number): boolean
             self.blinking = false
             self.blinkTimer = nextBlinkInterval()
         end
-    else
+    elseif not overHair then
+        -- ホバー中はまばたきを止める(笑顔を維持)
         self.blinkTimer -= seconds
         if self.blinkTimer <= 0 then
             self.blinking = true
@@ -206,10 +227,11 @@ function advance(self: CharacterAnimation, seconds: number): boolean
         end
     end
 
-    -- 閉じ具合 b から通常/smile まつ毛の不透明度をクロスフェード
+    -- まばたきの閉じ具合 b と ホバーsmile の大きい方を採用してクロスフェード
     local b = if self.blinking then blinkClose(self.blinkT) else 0.0
-    if self.vmBlinkOpen  then self.vmBlinkOpen.value  = 1.0 - b end
-    if self.vmBlinkSmile then self.vmBlinkSmile.value = b        end
+    local smileAmount = math.max(b, self.smileHover)
+    if self.vmBlinkOpen  then self.vmBlinkOpen.value  = 1.0 - smileAmount end
+    if self.vmBlinkSmile then self.vmBlinkSmile.value = smileAmount        end
 
     return true
 end
@@ -251,5 +273,6 @@ return function(): Node<CharacterAnimation>
         breathTime = 0,
         eyeOffsetX = 0, eyeOffsetY = 0,
         blinking = false, blinkT = 0, blinkTimer = 0,
+        smileHover = 0,
     }
 end
