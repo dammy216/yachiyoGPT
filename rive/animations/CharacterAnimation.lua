@@ -55,12 +55,12 @@ local BASE_NECK_Y  = -256.5
 local BASE_TOP_Y   = 52.0
 
 -- eyes グループのアートボード座標: face(512,494) + eyes(-7,-210) = (505, 284)
-local EYE_WORLD_X = 505.0
-local EYE_WORLD_Y = 284.0
+local EYE_WORLD_X = 0.0
+local EYE_WORLD_Y = -180.0
 
 -- 目追従パラメータ
 local EYE_MAX_OFFSET = 7.0    -- 瞳が動ける最大ピクセル量
-local EYE_REACH      = 180.0  -- この距離で追従量が最大(=±1)になる
+local EYE_REACH      = 250.0  -- この距離で追従量が最大(=±1)になる
 local EYE_LERP_SPEED = 5.0    -- 追従の滑らかさ(高いほど俊敏)
 
 -- 呼吸パラメータ
