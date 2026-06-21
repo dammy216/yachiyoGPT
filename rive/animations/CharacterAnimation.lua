@@ -1,5 +1,8 @@
 -- CharacterAnimation: ヤチヨベースのヒエラルキー制御スクリプト
--- 機能: ① 呼吸する処理   ② カーソルを目が追う処理
+-- 機能: ① 呼吸する処理   ② カーソルを目が追う処理   ③ ランダムまばたき
+--
+-- ③ まばたきは eyes グループに追加したsmileまつ毛を不透明度で切り替える:
+--    通常まつ毛+虹彩+白目 (blinkOpen) ↔ smileまつ毛 (blinkSmile) を直接クロスフェード。
 --
 -- ※ ベースアートボード(0-12223)の "PointerHitArea" シェイプ(0-43545)に
 --   アタッチして使用する。これは (0,0)〜(1024,1024) を覆う実質透明
@@ -30,12 +33,19 @@ type CharacterAnimation = {
     vmNeckY: Property<number>?,
     vmTopwearY: Property<number>?,
     vmBackHairY: Property<number>?,
+    -- まばたき用の不透明度 (0〜1)
+    vmBlinkOpen: Property<number>?,   -- 通常まつ毛+虹彩+白目
+    vmBlinkSmile: Property<number>?,  -- smileまつ毛
     -- 入力・内部状態
     mouseX: number,
     mouseY: number,
     breathTime: number,
     eyeOffsetX: number,
     eyeOffsetY: number,
+    -- まばたき状態
+    blinking: boolean,    -- まばたき中か
+    blinkT: number,       -- まばたき開始からの経過秒
+    blinkTimer: number,   -- 次のまばたきまでの残り秒
 }
 
 -- 目パーツの基準ローカル座標 (eyes グループ相対)
@@ -66,6 +76,31 @@ local EYE_LERP_SPEED = 5.0    -- 追従の滑らかさ(高いほど俊敏)
 -- 呼吸パラメータ
 local BREATH_AMP   = 5.0      -- 上下の振幅(Riveユニット)
 local BREATH_SPEED = 0.25     -- 1秒あたりの呼吸サイクル数 (0.25 = 約15回/分)
+
+-- まばたきパラメータ
+local BLINK_CLOSE = 0.08     -- 通常→smile に閉じる時間(秒)
+local BLINK_HOLD  = 0.06     -- smile(閉じ切り)を保つ時間(秒)
+local BLINK_OPEN  = 0.14     -- smile→通常 に開く時間(秒)
+local BLINK_TOTAL = BLINK_CLOSE + BLINK_HOLD + BLINK_OPEN
+local BLINK_MIN   = 2.0      -- 次のまばたきまでの最短間隔(秒)
+local BLINK_MAX   = 6.0      -- 次のまばたきまでの最長間隔(秒)
+
+-- 次のまばたきまでの待ち時間をランダムに決める
+local function nextBlinkInterval(): number
+    return BLINK_MIN + math.random() * (BLINK_MAX - BLINK_MIN)
+end
+
+-- まばたき経過時間 t から「閉じ具合」b を返す (0=開 / 1=閉じ切り)
+local function blinkClose(t: number): number
+    if t < BLINK_CLOSE then
+        return t / BLINK_CLOSE
+    elseif t < BLINK_CLOSE + BLINK_HOLD then
+        return 1.0
+    elseif t < BLINK_TOTAL then
+        return 1.0 - (t - BLINK_CLOSE - BLINK_HOLD) / BLINK_OPEN
+    end
+    return 0.0
+end
 
 -- カーソル位置から瞳のオフセット(目標値)を計算する
 local function eyeOffset(mx: number, my: number): (number, number)
@@ -104,6 +139,15 @@ function init(self: CharacterAnimation, context: Context): boolean
     self.vmNeckY      = vm:getNumber("neckY")
     self.vmTopwearY   = vm:getNumber("topwearY")
     self.vmBackHairY  = vm:getNumber("backHairY")
+    self.vmBlinkOpen  = vm:getNumber("blinkOpen")
+    self.vmBlinkSmile = vm:getNumber("blinkSmile")
+
+    -- まばたき初期状態: 目を開いた状態にして最初のまばたきまで待機
+    self.blinking   = false
+    self.blinkT     = 0
+    self.blinkTimer = nextBlinkInterval()
+    if self.vmBlinkOpen  then self.vmBlinkOpen.value  = 1.0 end
+    if self.vmBlinkSmile then self.vmBlinkSmile.value = 0.0 end
 
     print("[CharacterAnimation] 初期化完了")
     return true
@@ -146,6 +190,27 @@ function advance(self: CharacterAnimation, seconds: number): boolean
     if self.vmEyebrowLX  then self.vmEyebrowLX.value  = BROW_LX + ox * 0.15 end
     if self.vmEyebrowLY  then self.vmEyebrowLY.value  = BROW_LY + oy * 0.1  end
 
+    -- ===== ③ ランダムまばたき (通常→smile→通常) =====
+    if self.blinking then
+        self.blinkT += seconds
+        if self.blinkT >= BLINK_TOTAL then
+            -- まばたき終了。次のまばたきまでの待ち時間を再抽選
+            self.blinking = false
+            self.blinkTimer = nextBlinkInterval()
+        end
+    else
+        self.blinkTimer -= seconds
+        if self.blinkTimer <= 0 then
+            self.blinking = true
+            self.blinkT = 0
+        end
+    end
+
+    -- 閉じ具合 b から通常/smile まつ毛の不透明度をクロスフェード
+    local b = if self.blinking then blinkClose(self.blinkT) else 0.0
+    if self.vmBlinkOpen  then self.vmBlinkOpen.value  = 1.0 - b end
+    if self.vmBlinkSmile then self.vmBlinkSmile.value = b        end
+
     return true
 end
 
@@ -180,9 +245,11 @@ return function(): Node<CharacterAnimation>
         vmEyebrowLX = nil, vmEyebrowLY = nil,
         vmFaceY = nil, vmNeckY = nil,
         vmTopwearY = nil, vmBackHairY = nil,
+        vmBlinkOpen = nil, vmBlinkSmile = nil,
         -- カーソル初期値は目の中心に置き、起動直後の正面向きを維持
         mouseX = EYE_WORLD_X, mouseY = EYE_WORLD_Y,
         breathTime = 0,
         eyeOffsetX = 0, eyeOffsetY = 0,
+        blinking = false, blinkT = 0, blinkTimer = 0,
     }
 end
