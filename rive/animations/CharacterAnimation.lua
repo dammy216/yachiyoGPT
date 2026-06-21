@@ -2,6 +2,11 @@
 -- 機能: ① 呼吸する処理   ② カーソルを目が追う処理   ③ ランダムまばたき
 --       ④ 前髪の上部にカーソルを置くと笑顔(smile)になる処理
 --       ⑤ 一定範囲までは目だけ動かし、超えたら顔・全体を向ける(深度パララックス)処理
+--       ⑥ リップシンク: 母音(あいうえお)に応じて mouth を不透明度で切り替える処理
+--          (テスト: 左クリックで「あいうえお」を順に再生。将来はテキストの母音列を渡す)
+--       ⑦ ダブルクリックで顔を右に傾けて右目をウインクさせる処理
+--          ※ まばたき/笑顔/ウインクは左右別の不透明度で制御する:
+--            左目 = blinkOpen/blinkSmile、右目 = eyeOpenR/eyeSmileR
 --
 -- ③④ まばたき/笑顔は eyes グループに追加したsmileまつ毛を不透明度で切り替える:
 --    通常まつ毛+虹彩+白目 (blinkOpen) ↔ smileまつ毛 (blinkSmile) を直接クロスフェード。
@@ -36,9 +41,12 @@ type CharacterAnimation = {
     vmNeckY: Property<number>?,
     vmTopwearY: Property<number>?,
     vmBackHairY: Property<number>?,
-    -- まばたき用の不透明度 (0〜1)
-    vmBlinkOpen: Property<number>?,   -- 通常まつ毛+虹彩+白目
-    vmBlinkSmile: Property<number>?,  -- smileまつ毛
+    -- まばたき/笑顔/ウインク用の不透明度 (0〜1)。左右別々に制御する
+    vmBlinkOpen: Property<number>?,   -- 左目: 通常まつ毛+虹彩+白目
+    vmBlinkSmile: Property<number>?,  -- 左目: smileまつ毛
+    vmEyeOpenR: Property<number>?,    -- 右目: 通常まつ毛+虹彩+白目
+    vmEyeSmileR: Property<number>?,   -- 右目: smileまつ毛
+    vmFaceRot: Property<number>?,     -- 顔グループの回転(ラジアン, 正=右傾き)
     -- 振り向き(深度パララックス)で動かすパーツ
     vmFaceX: Property<number>?,       -- 顔グループ全体の X(頭の移動)
     vmNoseX: Property<number>?,       -- 鼻の X
@@ -50,6 +58,13 @@ type CharacterAnimation = {
     vmHairX: Property<number>?,       -- 前髪ノードの X
     vmHairY: Property<number>?,       -- 前髪ノードの Y
     vmBackHairX: Property<number>?,   -- 後ろ髪の X
+    -- リップシンク用の口の不透明度 (0〜1)。[あ,い,う,え,お,閉じ]
+    vmMouthA: Property<number>?,
+    vmMouthI: Property<number>?,
+    vmMouthU: Property<number>?,
+    vmMouthE: Property<number>?,
+    vmMouthO: Property<number>?,
+    vmMouthClose: Property<number>?,
     -- 入力・内部状態
     mouseX: number,
     mouseY: number,
@@ -63,6 +78,14 @@ type CharacterAnimation = {
     blinkT: number,       -- まばたき開始からの経過秒
     blinkTimer: number,   -- 次のまばたきまでの残り秒
     smileHover: number,   -- 前髪ホバーによるsmile量 (0〜1, なめらかに補間)
+    winking: boolean,     -- 右目ウインク+傾き中か
+    winkT: number,        -- ウインク開始からの経過秒
+    lastClickAt: number,  -- 直近クリック時刻(breathTime基準。ダブルクリック判定用)
+    -- リップシンク状態
+    mouthOp: {number},    -- 5口の現在不透明度 [あ,い,う,え,お]
+    vowelSeq: {number},   -- 再生中の母音列(各要素は VOWEL_A..O)
+    seqPos: number,       -- 再生位置(1始まり, 0=休止中)
+    seqTimer: number,     -- 現在の母音の残り表示時間(秒)
 }
 
 -- 目パーツの基準ローカル座標 (eyes グループ相対)
@@ -126,6 +149,22 @@ local BLINK_TOTAL = BLINK_CLOSE + BLINK_HOLD + BLINK_OPEN
 local BLINK_MIN   = 2.0      -- 次のまばたきまでの最短間隔(秒)
 local BLINK_MAX   = 6.0      -- 次のまばたきまでの最長間隔(秒)
 
+-- ウインク+顔の傾きパラメータ(右クリックで発動)
+local WINK_IN    = 0.14     -- 目を閉じ・顔を傾けるまでの時間(秒)
+local WINK_HOLD  = 0.50     -- 閉じ・傾けたまま保つ時間(秒)
+local WINK_OUT   = 0.25     -- 元に戻る時間(秒)
+local WINK_TOTAL = WINK_IN + WINK_HOLD + WINK_OUT
+local FACE_TILT  = 0.18     -- 顔の傾き量(ラジアン, 正=右。約10度)
+local DOUBLE_CLICK_TIME = 0.3 -- この秒数以内の2クリックをダブルクリックとみなす
+
+-- リップシンク(あいうえお + 閉じ)パラメータ
+local VOWEL_A, VOWEL_I, VOWEL_U, VOWEL_E, VOWEL_O = 1, 2, 3, 4, 5
+local MOUTH_CLOSE = 6        -- 口閉じ
+local MOUTH_COUNT = 6        -- 口の総数
+local REST_VOWEL = MOUTH_CLOSE -- 休止時に見せる口(口閉じ)
+local VOWEL_DUR  = 0.35      -- 1母音あたりの表示時間(秒)
+local MOUTH_LERP = 12.0      -- 口の切り替え速度(高いほどパキッと切替)
+
 -- 前髪の上部ホバーでsmileにする判定領域(EYE_WORLD と同じポインタ座標系)
 -- front hair のアートボード境界 x[374,632] y[104,635] を eyes基準(505,464)で換算した上部
 local HAIR_X_MIN   = -135.0  -- 前髪領域の左端
@@ -149,6 +188,26 @@ local function blinkClose(t: number): number
         return 1.0 - (t - BLINK_CLOSE - BLINK_HOLD) / BLINK_OPEN
     end
     return 0.0
+end
+
+-- ウインク経過時間 t から「閉じ・傾け具合」(0=通常 / 1=閉じ切り)を返す
+local function winkEnv(t: number): number
+    if t < WINK_IN then
+        return t / WINK_IN
+    elseif t < WINK_IN + WINK_HOLD then
+        return 1.0
+    elseif t < WINK_TOTAL then
+        return 1.0 - (t - WINK_IN - WINK_HOLD) / WINK_OUT
+    end
+    return 0.0
+end
+
+-- 母音列の再生を開始する。将来テキスト→母音列にして呼べば自動リップシンクになる
+-- 例: playVowels(self, {VOWEL_A, VOWEL_I, VOWEL_U, VOWEL_E, VOWEL_O})
+local function playVowels(self: CharacterAnimation, seq: {number})
+    self.vowelSeq = seq
+    self.seqPos = 1
+    self.seqTimer = VOWEL_DUR
 end
 
 -- カーソル位置から瞳のオフセット(目標値)を計算する
@@ -190,6 +249,9 @@ function init(self: CharacterAnimation, context: Context): boolean
     self.vmBackHairY  = vm:getNumber("backHairY")
     self.vmBlinkOpen  = vm:getNumber("blinkOpen")
     self.vmBlinkSmile = vm:getNumber("blinkSmile")
+    self.vmEyeOpenR   = vm:getNumber("eyeOpenR")
+    self.vmEyeSmileR  = vm:getNumber("eyeSmileR")
+    self.vmFaceRot    = vm:getNumber("faceRot")
     self.vmFaceX      = vm:getNumber("faceX")
     self.vmNoseX      = vm:getNumber("noseX")
     self.vmNoseY      = vm:getNumber("noseY")
@@ -200,14 +262,28 @@ function init(self: CharacterAnimation, context: Context): boolean
     self.vmHairX      = vm:getNumber("hairX")
     self.vmHairY      = vm:getNumber("hairY")
     self.vmBackHairX  = vm:getNumber("backHairX")
+    self.vmMouthA     = vm:getNumber("mouthA")
+    self.vmMouthI     = vm:getNumber("mouthI")
+    self.vmMouthU     = vm:getNumber("mouthU")
+    self.vmMouthE     = vm:getNumber("mouthE")
+    self.vmMouthO     = vm:getNumber("mouthO")
+    self.vmMouthClose = vm:getNumber("mouthClose")
 
     -- まばたき初期状態: 目を開いた状態にして最初のまばたきまで待機
     self.blinking   = false
     self.blinkT     = 0
     self.blinkTimer = nextBlinkInterval()
     self.smileHover = 0
+    self.winking    = false
+    self.winkT      = 0
+    self.lastClickAt = -100
     self.turnX      = 0
     self.turnY      = 0
+    -- リップシンク初期状態: 休止(口閉じ)の口だけ表示
+    self.mouthOp    = {0, 0, 0, 0, 0, 1}  -- [あ,い,う,え,お,閉じ]
+    self.vowelSeq   = {}
+    self.seqPos     = 0
+    self.seqTimer   = 0
     if self.vmBlinkOpen  then self.vmBlinkOpen.value  = 1.0 end
     if self.vmBlinkSmile then self.vmBlinkSmile.value = 0.0 end
 
@@ -298,8 +374,8 @@ function advance(self: CharacterAnimation, seconds: number): boolean
             self.blinking = false
             self.blinkTimer = nextBlinkInterval()
         end
-    elseif not overHair then
-        -- ホバー中はまばたきを止める(笑顔を維持)
+    elseif not overHair and not self.winking then
+        -- ホバー中・ウインク中はまばたきを止める
         self.blinkTimer -= seconds
         if self.blinkTimer <= 0 then
             self.blinking = true
@@ -307,11 +383,53 @@ function advance(self: CharacterAnimation, seconds: number): boolean
         end
     end
 
-    -- まばたきの閉じ具合 b と ホバーsmile の大きい方を採用してクロスフェード
+    -- ===== ⑦ ウインク(右目)+顔の傾き =====
+    if self.winking then
+        self.winkT += seconds
+        if self.winkT >= WINK_TOTAL then self.winking = false end
+    end
+    local winkE = if self.winking then winkEnv(self.winkT) else 0.0
+
+    -- まばたき/笑顔/ウインクを左右別々に反映
+    -- 左目 = まばたき+笑顔、右目 = まばたき+笑顔+ウインク
     local b = if self.blinking then blinkClose(self.blinkT) else 0.0
-    local smileAmount = math.max(b, self.smileHover)
-    if self.vmBlinkOpen  then self.vmBlinkOpen.value  = 1.0 - smileAmount end
-    if self.vmBlinkSmile then self.vmBlinkSmile.value = smileAmount        end
+    local closeL = math.max(b, self.smileHover)
+    local closeR = math.max(b, self.smileHover, winkE)
+    if self.vmBlinkOpen  then self.vmBlinkOpen.value  = 1.0 - closeL end  -- 左目 開き
+    if self.vmBlinkSmile then self.vmBlinkSmile.value = closeL       end  -- 左目 smile
+    if self.vmEyeOpenR   then self.vmEyeOpenR.value   = 1.0 - closeR end  -- 右目 開き
+    if self.vmEyeSmileR  then self.vmEyeSmileR.value  = closeR       end  -- 右目 smile
+    -- 顔の傾き(ウインク中だけ右へ。それ以外は 0 に戻る)
+    if self.vmFaceRot    then self.vmFaceRot.value    = winkE * FACE_TILT end
+
+    -- ===== ⑥ リップシンク(あいうえお) =====
+    -- 母音列を再生中ならタイマーを進め、終わったら休止(REST)へ戻す
+    if self.seqPos >= 1 then
+        self.seqTimer -= seconds
+        if self.seqTimer <= 0 then
+            self.seqPos += 1
+            if self.seqPos > #self.vowelSeq then
+                self.seqPos = 0          -- 再生終了
+            else
+                self.seqTimer = VOWEL_DUR
+            end
+        end
+    end
+    -- 現在見せる母音(再生中はシーケンス値, それ以外は REST=え)
+    local cur = REST_VOWEL
+    if self.seqPos >= 1 then cur = self.vowelSeq[self.seqPos] end
+    -- 各口の不透明度を「現在の母音=1 / それ以外=0」へクロスフェード
+    local ml = math.min(MOUTH_LERP * seconds, 1.0)
+    for v = 1, MOUTH_COUNT do
+        local target = if v == cur then 1.0 else 0.0
+        self.mouthOp[v] += (target - self.mouthOp[v]) * ml
+    end
+    if self.vmMouthA     then self.vmMouthA.value     = self.mouthOp[VOWEL_A]     end
+    if self.vmMouthI     then self.vmMouthI.value     = self.mouthOp[VOWEL_I]     end
+    if self.vmMouthU     then self.vmMouthU.value     = self.mouthOp[VOWEL_U]     end
+    if self.vmMouthE     then self.vmMouthE.value     = self.mouthOp[VOWEL_E]     end
+    if self.vmMouthO     then self.vmMouthO.value     = self.mouthOp[VOWEL_O]     end
+    if self.vmMouthClose then self.vmMouthClose.value = self.mouthOp[MOUTH_CLOSE] end
 
     return true
 end
@@ -327,6 +445,22 @@ end
 function pointerDown(self: CharacterAnimation, event: PointerEvent)
     self.mouseX = event.position.x
     self.mouseY = event.position.y
+    -- ダブルクリック判定(breathTime を時計として利用)
+    local now = self.breathTime
+    if now - self.lastClickAt <= DOUBLE_CLICK_TIME then
+        -- ダブルクリック: 顔を右に傾けて右目をウインク。進行中のリップシンクは止める
+        self.winking = true
+        self.winkT = 0
+        self.seqPos = 0
+        -- 進行中のまばたきはキャンセルし、ウインク後まで次のまばたきを遅らせる
+        self.blinking = false
+        self.blinkTimer = nextBlinkInterval()
+        self.lastClickAt = -100   -- 連続判定をリセット(3クリック目は新たな単発扱い)
+    else
+        -- シングルクリック: リップシンク「あいうえお」を再生
+        playVowels(self, {VOWEL_A, VOWEL_I, VOWEL_U, VOWEL_E, VOWEL_O})
+        self.lastClickAt = now
+    end
     event:hit()
 end
 
@@ -348,10 +482,13 @@ return function(): Node<CharacterAnimation>
         vmFaceY = nil, vmNeckY = nil,
         vmTopwearY = nil, vmBackHairY = nil,
         vmBlinkOpen = nil, vmBlinkSmile = nil,
+        vmEyeOpenR = nil, vmEyeSmileR = nil, vmFaceRot = nil,
         vmFaceX = nil, vmNoseX = nil, vmNoseY = nil,
         vmMouthX = nil, vmMouthY = nil,
         vmBodyX = nil, vmNeckX = nil,
         vmHairX = nil, vmHairY = nil, vmBackHairX = nil,
+        vmMouthA = nil, vmMouthI = nil, vmMouthU = nil,
+        vmMouthE = nil, vmMouthO = nil, vmMouthClose = nil,
         -- カーソル初期値は目の中心に置き、起動直後の正面向きを維持
         mouseX = EYE_WORLD_X, mouseY = EYE_WORLD_Y,
         breathTime = 0,
@@ -359,5 +496,10 @@ return function(): Node<CharacterAnimation>
         turnX = 0, turnY = 0,
         blinking = false, blinkT = 0, blinkTimer = 0,
         smileHover = 0,
+        winking = false, winkT = 0,
+        lastClickAt = -100,
+        mouthOp = {0, 0, 0, 0, 0, 1},
+        vowelSeq = {},
+        seqPos = 0, seqTimer = 0,
     }
 end
