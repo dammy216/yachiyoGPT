@@ -1,6 +1,7 @@
 -- CharacterAnimation: ヤチヨベースのヒエラルキー制御スクリプト
 -- 機能: ① 呼吸する処理   ② カーソルを目が追う処理   ③ ランダムまばたき
 --       ④ 前髪の上部にカーソルを置くと笑顔(smile)になる処理
+--       ⑤ 一定範囲までは目だけ動かし、超えたら顔・全体を向ける(深度パララックス)処理
 --
 -- ③④ まばたき/笑顔は eyes グループに追加したsmileまつ毛を不透明度で切り替える:
 --    通常まつ毛+虹彩+白目 (blinkOpen) ↔ smileまつ毛 (blinkSmile) を直接クロスフェード。
@@ -38,12 +39,25 @@ type CharacterAnimation = {
     -- まばたき用の不透明度 (0〜1)
     vmBlinkOpen: Property<number>?,   -- 通常まつ毛+虹彩+白目
     vmBlinkSmile: Property<number>?,  -- smileまつ毛
+    -- 振り向き(深度パララックス)で動かすパーツ
+    vmFaceX: Property<number>?,       -- 顔グループ全体の X(頭の移動)
+    vmNoseX: Property<number>?,       -- 鼻の X
+    vmNoseY: Property<number>?,       -- 鼻の Y
+    vmMouthX: Property<number>?,      -- 口の X
+    vmMouthY: Property<number>?,      -- 口の Y
+    vmBodyX: Property<number>?,       -- 体ノードの X
+    vmNeckX: Property<number>?,       -- 首の X
+    vmHairX: Property<number>?,       -- 前髪ノードの X
+    vmHairY: Property<number>?,       -- 前髪ノードの Y
+    vmBackHairX: Property<number>?,   -- 後ろ髪の X
     -- 入力・内部状態
     mouseX: number,
     mouseY: number,
     breathTime: number,
     eyeOffsetX: number,
     eyeOffsetY: number,
+    turnX: number,        -- 振り向き(横)のなめらかな値 (-1〜1)
+    turnY: number,        -- 振り向き(縦)のなめらかな値 (-1〜1)
     -- まばたき状態
     blinking: boolean,    -- まばたき中か
     blinkT: number,       -- まばたき開始からの経過秒
@@ -67,6 +81,18 @@ local BASE_BHAIR_Y = 494.0
 local BASE_NECK_Y  = -256.5
 local BASE_TOP_Y   = 52.0
 
+-- 振り向き(パララックス)で動かすパーツの基準 X/Y
+local BASE_FACE_X  = 512.0   -- 顔グループ
+local BASE_NOSE_X  = -4.0    -- 鼻
+local BASE_NOSE_Y  = -175.5  -- 鼻
+local BASE_MOUTH_X = -4.5    -- 口
+local BASE_MOUTH_Y = -133.0  -- 口
+local BASE_BODY_X  = 512.0   -- 体ノード
+local BASE_NECK_X  = -4.5    -- 首
+local BASE_HAIR_X  = 0.0     -- 前髪ノード
+local BASE_HAIR_Y  = 0.0     -- 前髪ノード
+local BASE_BHAIR_X = 512.0   -- 後ろ髪
+
 -- eyes グループのアートボード座標: face(512,494) + eyes(-7,-210) = (505, 284)
 local EYE_WORLD_X = 0.0
 local EYE_WORLD_Y = -180.0
@@ -75,6 +101,18 @@ local EYE_WORLD_Y = -180.0
 local EYE_MAX_OFFSET = 4.5    -- 瞳が動ける最大ピクセル量
 local EYE_REACH      = 250.0  -- この距離で追従量が最大(=±1)になる
 local EYE_LERP_SPEED = 5.0    -- 追従の滑らかさ(高いほど俊敏)
+
+-- 振り向き(深度パララックス)パラメータ
+-- EYE_REACH を超えた分で 0→1 に立ち上がり、TURN_REACH で最大になる
+local TURN_REACH   = 560.0   -- この距離で振り向きが最大(=±1)
+-- パーツごとの最大移動量(px)。前方ほど大きく動かして擬似3Dの奥行きを出す
+local HEAD_X, HEAD_Y         = 16.0, 10.0  -- 顔グループ全体(頭の移動。中景)
+local NOSE_X, NOSE_Y         =  8.0,  5.0  -- 鼻(最前面: 頭移動に上乗せ)
+local MOUTH_X, MOUTH_Y       =  5.0,  3.0  -- 口(上乗せ)
+local HAIRTURN_X, HAIRTURN_Y =  7.0,  4.0  -- 前髪(上乗せ)
+local BHAIRTURN_X  = -5.0    -- 後ろ髪(逆方向→振り向きで見えてくる)
+local BODYTURN_X   =  6.0    -- 体(頭につられて傾く)
+local NECKTURN_X   =  4.0    -- 首(体に上乗せ)
 
 -- 呼吸パラメータ
 local BREATH_AMP   = 5.0      -- 上下の振幅(Riveユニット)
@@ -152,12 +190,24 @@ function init(self: CharacterAnimation, context: Context): boolean
     self.vmBackHairY  = vm:getNumber("backHairY")
     self.vmBlinkOpen  = vm:getNumber("blinkOpen")
     self.vmBlinkSmile = vm:getNumber("blinkSmile")
+    self.vmFaceX      = vm:getNumber("faceX")
+    self.vmNoseX      = vm:getNumber("noseX")
+    self.vmNoseY      = vm:getNumber("noseY")
+    self.vmMouthX     = vm:getNumber("mouthX")
+    self.vmMouthY     = vm:getNumber("mouthY")
+    self.vmBodyX      = vm:getNumber("bodyX")
+    self.vmNeckX      = vm:getNumber("neckX")
+    self.vmHairX      = vm:getNumber("hairX")
+    self.vmHairY      = vm:getNumber("hairY")
+    self.vmBackHairX  = vm:getNumber("backHairX")
 
     -- まばたき初期状態: 目を開いた状態にして最初のまばたきまで待機
     self.blinking   = false
     self.blinkT     = 0
     self.blinkTimer = nextBlinkInterval()
     self.smileHover = 0
+    self.turnX      = 0
+    self.turnY      = 0
     if self.vmBlinkOpen  then self.vmBlinkOpen.value  = 1.0 end
     if self.vmBlinkSmile then self.vmBlinkSmile.value = 0.0 end
 
@@ -170,7 +220,7 @@ function advance(self: CharacterAnimation, seconds: number): boolean
     self.breathTime += seconds
     -- 正弦波: 上方向(-Y)がピーク
     local breathY = -math.sin(self.breathTime * math.tau * BREATH_SPEED) * BREATH_AMP
-    if self.vmFaceY     then self.vmFaceY.value     = BASE_FACE_Y  + breathY       end
+    -- faceY は ⑤ で呼吸 + 振り向きの縦成分をまとめて書き込む
     if self.vmBackHairY then self.vmBackHairY.value = BASE_BHAIR_Y + breathY * 0.6 end
     if self.vmNeckY     then self.vmNeckY.value     = BASE_NECK_Y  + breathY       end
     if self.vmTopwearY  then self.vmTopwearY.value  = BASE_TOP_Y   + breathY       end
@@ -201,6 +251,36 @@ function advance(self: CharacterAnimation, seconds: number): boolean
     if self.vmEyebrowRY  then self.vmEyebrowRY.value  = BROW_RY + oy * 0.1  end
     if self.vmEyebrowLX  then self.vmEyebrowLX.value  = BROW_LX + ox * 0.15 end
     if self.vmEyebrowLY  then self.vmEyebrowLY.value  = BROW_LY + oy * 0.1  end
+
+    -- ===== ⑤ 範囲を超えたら顔・全体を向ける(深度パララックス) =====
+    -- 目は EYE_REACH までで最大(②)。ここではそれを超えた分で「振り向き」を立ち上げる
+    local dx = self.mouseX - EYE_WORLD_X
+    local dy = self.mouseY - EYE_WORLD_Y
+    local dist = math.sqrt(dx * dx + dy * dy)
+    local ux, uy = 0.0, 0.0
+    if dist > 0.001 then ux, uy = dx / dist, dy / dist end
+    -- EYE_REACH〜TURN_REACH で 0→1。方向(ux,uy)を掛けて符号付きにする
+    local turnFrac = math.clamp((dist - EYE_REACH) / (TURN_REACH - EYE_REACH), 0, 1)
+    self.turnX += (ux * turnFrac - self.turnX) * a
+    self.turnY += (uy * turnFrac - self.turnY) * a
+    local hx = self.turnX
+    local hy = self.turnY
+
+    -- 中景: 顔グループ全体(=頭)を動かす。縦は呼吸と合算
+    if self.vmFaceX     then self.vmFaceX.value     = BASE_FACE_X  + hx * HEAD_X            end
+    if self.vmFaceY     then self.vmFaceY.value     = BASE_FACE_Y  + breathY + hy * HEAD_Y  end
+    -- 前景: 顔グループ移動に上乗せ(前方ほど大きく → 奥行き)
+    if self.vmNoseX     then self.vmNoseX.value     = BASE_NOSE_X  + hx * NOSE_X            end
+    if self.vmNoseY     then self.vmNoseY.value     = BASE_NOSE_Y  + hy * NOSE_Y            end
+    if self.vmMouthX    then self.vmMouthX.value    = BASE_MOUTH_X + hx * MOUTH_X           end
+    if self.vmMouthY    then self.vmMouthY.value    = BASE_MOUTH_Y + hy * MOUTH_Y           end
+    if self.vmHairX     then self.vmHairX.value     = BASE_HAIR_X  + hx * HAIRTURN_X        end
+    if self.vmHairY     then self.vmHairY.value     = BASE_HAIR_Y  + hy * HAIRTURN_Y        end
+    -- 背景: 後ろ髪は逆方向に少し(振り向きで見えてくる)
+    if self.vmBackHairX then self.vmBackHairX.value = BASE_BHAIR_X + hx * BHAIRTURN_X       end
+    -- 体・首: 頭の振り向きにつられて傾ける
+    if self.vmBodyX     then self.vmBodyX.value     = BASE_BODY_X  + hx * BODYTURN_X        end
+    if self.vmNeckX     then self.vmNeckX.value     = BASE_NECK_X  + hx * NECKTURN_X        end
 
     -- ===== ④ 前髪の上部ホバーで笑顔 =====
     -- カーソルが前髪上部の矩形内にあるか判定(mouseX/Y は EYE_WORLD と同じ座標系)
@@ -268,10 +348,15 @@ return function(): Node<CharacterAnimation>
         vmFaceY = nil, vmNeckY = nil,
         vmTopwearY = nil, vmBackHairY = nil,
         vmBlinkOpen = nil, vmBlinkSmile = nil,
+        vmFaceX = nil, vmNoseX = nil, vmNoseY = nil,
+        vmMouthX = nil, vmMouthY = nil,
+        vmBodyX = nil, vmNeckX = nil,
+        vmHairX = nil, vmHairY = nil, vmBackHairX = nil,
         -- カーソル初期値は目の中心に置き、起動直後の正面向きを維持
         mouseX = EYE_WORLD_X, mouseY = EYE_WORLD_Y,
         breathTime = 0,
         eyeOffsetX = 0, eyeOffsetY = 0,
+        turnX = 0, turnY = 0,
         blinking = false, blinkT = 0, blinkTimer = 0,
         smileHover = 0,
     }
