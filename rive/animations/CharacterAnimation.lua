@@ -222,7 +222,7 @@ local SING_SMILE_LERP = 8.0    -- 笑顔の出入りのなめらかさ(高いほ
 
 -- 振幅に応じて歌う母音を選ぶ。大きいと開いた口(あ/お/え)、小さいと狭い口(い/う/え)
 local function pickSingVowel(amp: number): number
-    if amp > 0.5 then
+    if amp > 0.35 then
         return ({VOWEL_A, VOWEL_O, VOWEL_E})[math.random(3)]
     end
     return ({VOWEL_I, VOWEL_U, VOWEL_E})[math.random(3)]
