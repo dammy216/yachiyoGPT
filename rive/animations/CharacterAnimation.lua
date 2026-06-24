@@ -3,8 +3,11 @@
 --       ④ 前髪の上部にカーソルを置くと笑顔(smile)になる処理
 --       ⑤ 一定範囲までは目だけ動かし、超えたら顔・全体を向ける(深度パララックス)処理
 --       ⑥ リップシンク: 母音(あいうえお)に応じて mouth を不透明度で切り替える処理
---          (テスト: 左クリックで「あいうえお」を順に再生。将来はテキストの母音列を渡す)
+--          (playVowels(self, 母音列) で再生。将来はテキストの母音列を渡す)
 --       ⑦ ダブルクリックで顔を右に傾けて右目をウインクさせる処理
+--       ⑧ 歌唱モード: React 側が音楽の振幅を singAmplitude(0〜1) に書き込み、
+--          その値で自動口パク + 左右へのゆっくりしたスウェイ + 時々の笑顔で
+--          楽しく歌っているように見せる処理
 --          ※ まばたき/笑顔/ウインクは左右別の不透明度で制御する:
 --            左目 = blinkOpen/blinkSmile、右目 = eyeOpenR/eyeSmileR
 --
@@ -47,6 +50,13 @@ type CharacterAnimation = {
     vmEyeOpenR: Property<number>?,    -- 右目: 通常まつ毛+虹彩+白目
     vmEyeSmileR: Property<number>?,   -- 右目: smileまつ毛
     vmFaceRot: Property<number>?,     -- 顔グループの回転(ラジアン, 正=右傾き)
+    vmNeckRot: Property<number>?,     -- 首の回転(歌唱: body に上乗せして首を曲げる)
+    vmBodyRot: Property<number>?,     -- 体の回転(歌唱: 腰支点で左右に揺らす)
+    vmBackHairRot: Property<number>?, -- 後ろ髪の回転(歌唱: 頭と同じ向きに揺らす)
+    -- root の r/x/y(現状は基準位置に固定し続けるだけ＝横スライド廃止)
+    vmBaseRot: Property<number>?,
+    vmBaseX: Property<number>?,
+    vmBaseY: Property<number>?,
     -- 振り向き(深度パララックス)で動かすパーツ
     vmFaceX: Property<number>?,       -- 顔グループ全体の X(頭の移動)
     vmNoseX: Property<number>?,       -- 鼻の X
@@ -86,6 +96,19 @@ type CharacterAnimation = {
     vowelSeq: {number},   -- 再生中の母音列(各要素は VOWEL_A..O)
     seqPos: number,       -- 再生位置(1始まり, 0=休止中)
     seqTimer: number,     -- 現在の母音の残り表示時間(秒)
+    -- 歌唱モード (React 側が音楽の振幅を singAmplitude に書き込む)
+    vmSingAmp: Property<number>?,  -- 入力: 現在の音量振幅 (0〜1)
+    singTimer: number,    -- 次の口の切り替えまでの残り秒
+    singVowel: number,    -- 現在歌っている母音(VOWEL_A..O)
+    singPhase: number,    -- 体の弾み・横揺れ用の位相
+    singEnv: number,      -- 振幅エンベロープ(生の振幅をなめらかにした値。口パク用)
+    singActive: boolean,  -- 歌唱中か(ヒステリシスでチャタリング防止)
+    swayGate: number,     -- 揺れの強さ(0=停止〜1=フルスウェイ。歌唱でなめらかに出入り)
+    -- 歌唱中に時々ニコッと笑う状態
+    singSmiling: boolean,    -- 笑顔の最中か
+    singSmileHold: number,   -- 笑顔の残り保持時間(秒)
+    singSmileTimer: number,  -- 次の笑顔までの残り秒
+    singSmileAmt: number,    -- 笑顔量(0〜1, なめらかに補間)
 }
 
 -- 目パーツの基準ローカル座標 (eyes グループ相対)
@@ -154,7 +177,10 @@ local WINK_IN    = 0.14     -- 目を閉じ・顔を傾けるまでの時間(秒
 local WINK_HOLD  = 0.50     -- 閉じ・傾けたまま保つ時間(秒)
 local WINK_OUT   = 0.25     -- 元に戻る時間(秒)
 local WINK_TOTAL = WINK_IN + WINK_HOLD + WINK_OUT
-local FACE_TILT  = 0.18     -- 顔の傾き量(ラジアン, 正=右。約10度)
+-- ウインクの頭の傾きは歌唱スウェイ(SING_HEAD_ROT)に対する割合で持つ。
+-- こうすると揺れと同じスケールなので、ウインク中も頭を止めず傾きだけ合成できる。
+local WINK_TILT_FRAC = 0.05  -- ウインク時に右へ傾ける量(頭の振り角に対する割合)
+local WINK_SWAY_DUCK = 0.1  -- ウインク中にスウェイを弱める割合(0=弱めない/1=止める)
 local DOUBLE_CLICK_TIME = 0.3 -- この秒数以内の2クリックをダブルクリックとみなす
 
 -- リップシンク(あいうえお + 閉じ)パラメータ
@@ -164,6 +190,43 @@ local MOUTH_COUNT = 6        -- 口の総数
 local REST_VOWEL = MOUTH_CLOSE -- 休止時に見せる口(口閉じ)
 local VOWEL_DUR  = 0.35      -- 1母音あたりの表示時間(秒)
 local MOUTH_LERP = 12.0      -- 口の切り替え速度(高いほどパキッと切替)
+
+-- 歌唱モード(React が singAmplitude に音楽の振幅を書き込む)パラメータ
+-- React 由来の振幅はフレームごとにガタつくため、そのまま揺れに使うとガクガク・
+-- 瞬きのちらつきが出る。そこで「エンベロープで滑らかにした値」と「ヒステリシス付きの
+-- 歌唱フラグ」を作り、体の揺れは振幅ではなく一定ペース(swayGate)で動かす。
+-- 口パクだけはエンベロープ値(singEnv)を見て母音・速さを変える。
+local SING_ON        = 0.12   -- これ以上で歌唱開始(エンベロープ基準)
+local SING_OFF       = 0.05   -- これ未満で歌唱停止(ヒステリシスでチャタリング防止)
+local SING_GAP       = 0.06   -- これ未満は口を閉じる(息継ぎ・フレーズの合間)
+local AMP_ATTACK     = 14.0   -- 振幅エンベロープ: 上がるとき(俊敏に追従)
+local AMP_RELEASE    = 5.0    -- 振幅エンベロープ: 下がるとき(ゆっくり戻す)
+local SWAY_GATE_LERP = 2.5    -- 揺れの出入りのなめらかさ(高いほど早くフルスウェイ)
+local SING_DUR_MAX   = 0.34   -- 口の切り替え間隔(静かなとき=ゆっくり)
+local SING_DUR_MIN   = 0.18   -- 口の切り替え間隔(大きいとき=速い)
+-- 「左右に首をかしげる」楽しそうな揺れ。平行移動はせず各パーツの rotation だけで揺らす。
+-- 頭(顔)を一番大きく傾け、首・体・後ろ髪がしなって追従する。
+-- 揺れの強さは音量ではなく swayGate(歌唱中=1へ補間)で決めるので一定ペースで安定する。
+local SING_SWAY_SPEED  = 0.5   -- 揺れの周期(/秒。大きいほど軽快)
+local SING_HEAD_ROT    = 6      -- 頭(顔)の振り角(首かしげの主役)
+local SING_BHAIR_ROT   = 5.1    -- 後ろ髪の振り角(頭の約0.85倍。少ししなり感)
+local SING_NECK_ROT    = 3.0    -- 首の振り角(頭の約0.5倍。body に上乗せ)
+local SING_BODY_ROT    = 1.7  -- 体の振り角(頭の約0.3倍。土台の軽いリーン)
+local BASE_ROOT_X      = -220.0 -- root の基準 X(動かさず保持)
+local BASE_ROOT_Y      = 0.0    -- root の基準 Y
+-- 歌っているとき時々ニコッと笑う(頻度低め)
+local SING_SMILE_MIN  = 4.0    -- 次の笑顔までの最短間隔(秒)
+local SING_SMILE_MAX  = 9.0    -- 次の笑顔までの最長間隔(秒)
+local SING_SMILE_HOLD = 1.2    -- 笑顔を保つ時間(秒)
+local SING_SMILE_LERP = 8.0    -- 笑顔の出入りのなめらかさ(高いほど俊敏)
+
+-- 振幅に応じて歌う母音を選ぶ。大きいと開いた口(あ/お/え)、小さいと狭い口(い/う/え)
+local function pickSingVowel(amp: number): number
+    if amp > 0.5 then
+        return ({VOWEL_A, VOWEL_O, VOWEL_E})[math.random(3)]
+    end
+    return ({VOWEL_I, VOWEL_U, VOWEL_E})[math.random(3)]
+end
 
 -- 前髪の上部ホバーでsmileにする判定領域(EYE_WORLD と同じポインタ座標系)
 -- front hair のアートボード境界 x[374,632] y[104,635] を eyes基準(505,464)で換算した上部
@@ -252,6 +315,16 @@ function init(self: CharacterAnimation, context: Context): boolean
     self.vmEyeOpenR   = vm:getNumber("eyeOpenR")
     self.vmEyeSmileR  = vm:getNumber("eyeSmileR")
     self.vmFaceRot    = vm:getNumber("faceRot")
+    self.vmNeckRot    = vm:getNumber("neckRot")
+    self.vmBodyRot    = vm:getNumber("bodyRot")
+    self.vmBackHairRot = vm:getNumber("backHairRot")
+    self.vmBaseRot    = vm:getNumber("baseRot")
+    self.vmBaseX      = vm:getNumber("baseX")
+    self.vmBaseY      = vm:getNumber("baseY")
+    -- root の初期位置(バインド既定値0で character がズレるのを防ぐ)
+    if self.vmBaseRot then self.vmBaseRot.value = 0.0 end
+    if self.vmBaseX   then self.vmBaseX.value   = BASE_ROOT_X end
+    if self.vmBaseY   then self.vmBaseY.value   = BASE_ROOT_Y end
     self.vmFaceX      = vm:getNumber("faceX")
     self.vmNoseX      = vm:getNumber("noseX")
     self.vmNoseY      = vm:getNumber("noseY")
@@ -268,6 +341,7 @@ function init(self: CharacterAnimation, context: Context): boolean
     self.vmMouthE     = vm:getNumber("mouthE")
     self.vmMouthO     = vm:getNumber("mouthO")
     self.vmMouthClose = vm:getNumber("mouthClose")
+    self.vmSingAmp    = vm:getNumber("singAmplitude")
 
     -- まばたき初期状態: 目を開いた状態にして最初のまばたきまで待機
     self.blinking   = false
@@ -284,6 +358,17 @@ function init(self: CharacterAnimation, context: Context): boolean
     self.vowelSeq   = {}
     self.seqPos     = 0
     self.seqTimer   = 0
+    -- 歌唱モード初期状態
+    self.singTimer  = 0
+    self.singVowel  = REST_VOWEL
+    self.singPhase  = 0
+    self.singEnv    = 0
+    self.singActive = false
+    self.swayGate   = 0
+    self.singSmiling   = false
+    self.singSmileHold = 0
+    self.singSmileTimer = SING_SMILE_MIN + math.random() * (SING_SMILE_MAX - SING_SMILE_MIN)
+    self.singSmileAmt  = 0
     if self.vmBlinkOpen  then self.vmBlinkOpen.value  = 1.0 end
     if self.vmBlinkSmile then self.vmBlinkSmile.value = 0.0 end
 
@@ -366,6 +451,43 @@ function advance(self: CharacterAnimation, seconds: number): boolean
     local sa = math.min(SMILE_LERP * seconds, 1.0)
     self.smileHover += ((if overHair then 1.0 else 0.0) - self.smileHover) * sa
 
+    -- ===== 歌唱モードの判定 + 時々の笑顔 =====
+    -- React が singAmplitude(0〜1) を毎フレーム書き込む。口パク・体の動きで共用する
+    -- 生の振幅はガタつくのでエンベロープで平滑化(口パクはこの滑らかな値を使う)
+    local rawAmp = if self.vmSingAmp then self.vmSingAmp.value else 0.0
+    local ampRate = if rawAmp > self.singEnv then AMP_ATTACK else AMP_RELEASE
+    self.singEnv += (rawAmp - self.singEnv) * math.min(ampRate * seconds, 1.0)
+    local singAmp = self.singEnv
+    -- 歌唱フラグはヒステリシス(開始0.12/停止0.05)でチャタリングを防ぐ
+    if self.singActive then
+        if singAmp < SING_OFF then self.singActive = false end
+    else
+        if singAmp > SING_ON then self.singActive = true end
+    end
+    local singing = self.singActive
+    -- 歌っているあいだ、たまにニコッと笑う(SING_SMILE_MIN〜MAX 秒ごとに HOLD 秒だけ)
+    if singing then
+        if self.singSmiling then
+            self.singSmileHold -= seconds
+            if self.singSmileHold <= 0 then
+                self.singSmiling = false
+                self.singSmileTimer = SING_SMILE_MIN
+                    + math.random() * (SING_SMILE_MAX - SING_SMILE_MIN)
+            end
+        else
+            self.singSmileTimer -= seconds
+            if self.singSmileTimer <= 0 then
+                self.singSmiling = true
+                self.singSmileHold = SING_SMILE_HOLD
+            end
+        end
+    else
+        self.singSmiling = false
+    end
+    -- 笑顔量を目標値へなめらかに補間
+    local smt = math.min(SING_SMILE_LERP * seconds, 1.0)
+    self.singSmileAmt += ((if self.singSmiling then 1.0 else 0.0) - self.singSmileAmt) * smt
+
     -- ===== ③ ランダムまばたき (通常→smile→通常) =====
     if self.blinking then
         self.blinkT += seconds
@@ -393,14 +515,15 @@ function advance(self: CharacterAnimation, seconds: number): boolean
     -- まばたき/笑顔/ウインクを左右別々に反映
     -- 左目 = まばたき+笑顔、右目 = まばたき+笑顔+ウインク
     local b = if self.blinking then blinkClose(self.blinkT) else 0.0
-    local closeL = math.max(b, self.smileHover)
-    local closeR = math.max(b, self.smileHover, winkE)
+    local closeL = math.max(b, self.smileHover, self.singSmileAmt)
+    local closeR = math.max(b, self.smileHover, self.singSmileAmt, winkE)
     if self.vmBlinkOpen  then self.vmBlinkOpen.value  = 1.0 - closeL end  -- 左目 開き
     if self.vmBlinkSmile then self.vmBlinkSmile.value = closeL       end  -- 左目 smile
     if self.vmEyeOpenR   then self.vmEyeOpenR.value   = 1.0 - closeR end  -- 右目 開き
     if self.vmEyeSmileR  then self.vmEyeSmileR.value  = closeR       end  -- 右目 smile
-    -- 顔の傾き(ウインク中だけ右へ。それ以外は 0 に戻る)
-    if self.vmFaceRot    then self.vmFaceRot.value    = winkE * FACE_TILT end
+    -- 顔・首・体・後ろ髪の rotation は下のスウェイ処理でまとめて書き込む。
+    -- ウインクの傾き(winkE)もそこで揺れに合成するので、ここでは書かない
+    -- (別々に書くとウインク中に頭だけ固定され、終了時にカクッと跳ねるため)。
 
     -- ===== ⑥ リップシンク(あいうえお) =====
     -- 母音列を再生中ならタイマーを進め、終わったら休止(REST)へ戻す
@@ -415,9 +538,26 @@ function advance(self: CharacterAnimation, seconds: number): boolean
             end
         end
     end
-    -- 現在見せる母音(再生中はシーケンス値, それ以外は REST=え)
+    -- 現在見せる母音(再生中はシーケンス値, それ以外は REST=口閉じ)
     local cur = REST_VOWEL
     if self.seqPos >= 1 then cur = self.vowelSeq[self.seqPos] end
+
+    -- ===== 歌唱モード(音楽の振幅で自動口パク) =====
+    -- singAmp / singing は前段(笑顔判定)で算出済み。母音列の再生より優先する
+    if singing then
+        -- 一定間隔で口を切り替える(音が大きいほど速くパクパク)
+        self.singTimer -= seconds
+        if self.singTimer <= 0 then
+            self.singVowel = pickSingVowel(singAmp)
+            self.singTimer = SING_DUR_MAX
+                - (SING_DUR_MAX - SING_DUR_MIN) * math.min(singAmp, 1.0)
+        end
+        cur = self.singVowel
+    elseif singAmp <= SING_GAP and self.seqPos < 1 then
+        -- フレーズの合間など、音が小さいときは口を閉じる
+        cur = MOUTH_CLOSE
+        self.singTimer = 0
+    end
     -- 各口の不透明度を「現在の母音=1 / それ以外=0」へクロスフェード
     local ml = math.min(MOUTH_LERP * seconds, 1.0)
     for v = 1, MOUTH_COUNT do
@@ -430,6 +570,36 @@ function advance(self: CharacterAnimation, seconds: number): boolean
     if self.vmMouthE     then self.vmMouthE.value     = self.mouthOp[VOWEL_E]     end
     if self.vmMouthO     then self.vmMouthO.value     = self.mouthOp[VOWEL_O]     end
     if self.vmMouthClose then self.vmMouthClose.value = self.mouthOp[MOUTH_CLOSE] end
+
+    -- ===== 歌っているとき、各パーツの rotation だけで左右に揺らす(平行移動なし) =====
+    -- root・各パーツの位置は動かさない(横スライド廃止)。
+    -- バインド既定値0でズレないよう root の基準位置を書き続ける。
+    if self.vmBaseRot then self.vmBaseRot.value = 0.0 end
+    if self.vmBaseX   then self.vmBaseX.value   = BASE_ROOT_X end
+    if self.vmBaseY   then self.vmBaseY.value   = BASE_ROOT_Y end
+
+    -- ===== 歌唱中、左右に首をかしげる楽しそうな揺れ(各パーツの rotation のみ) =====
+    -- 揺れは「振幅そのもの」ではなく一定ペース(swayGate)で動かすのが要点。
+    -- React の振幅はガタつくので直接振り幅にするとガクガクするため、歌唱中は
+    -- swayGate を 1 へなめらかに上げてフルスウェイし(=singAmplitude=1相当の安定ペース)、
+    -- 歌い終わると 0 へ戻して止める。振り幅自体は音量で変えない(口だけが音量追従)。
+    local gateTarget = if singing then 1.0 else 0.0
+    self.swayGate += (gateTarget - self.swayGate) * math.min(SWAY_GATE_LERP * seconds, 1.0)
+    self.singPhase += seconds * SING_SWAY_SPEED
+    local k = math.sin(self.singPhase * math.tau) * self.swayGate  -- 左右の揺れ(-1〜1)×強さ
+    -- 体→首→頭 と振り角を強めて背骨がしなるように回す(位置は不動)。
+    -- 首は body の子なので body+neck が合算され、頭が一番大きく傾く。
+    if self.vmBodyRot     then self.vmBodyRot.value     = k * SING_BODY_ROT  end
+    if self.vmNeckRot     then self.vmNeckRot.value     = k * SING_NECK_ROT  end
+    if self.vmBackHairRot then self.vmBackHairRot.value = k * SING_BHAIR_ROT end
+    -- 頭(顔)は一番強く傾ける。ウインク中もスウェイし続けたまま、右への傾きを
+    -- winkE(0→1→0)でなめらかに合成する。これで「ウインク中に頭が固定」「終了時に
+    -- カクッと戻る」のを防ぎ、歌いながら自然にウインクできる。
+    if self.vmFaceRot then
+        self.vmFaceRot.value =
+            k * SING_HEAD_ROT * (1.0 - WINK_SWAY_DUCK * winkE)
+            + winkE * SING_HEAD_ROT * WINK_TILT_FRAC
+    end
 
     return true
 end
@@ -457,8 +627,8 @@ function pointerDown(self: CharacterAnimation, event: PointerEvent)
         self.blinkTimer = nextBlinkInterval()
         self.lastClickAt = -100   -- 連続判定をリセット(3クリック目は新たな単発扱い)
     else
-        -- シングルクリック: リップシンク「あいうえお」を再生
-        playVowels(self, {VOWEL_A, VOWEL_I, VOWEL_U, VOWEL_E, VOWEL_O})
+        -- シングルクリックでは何もしない(以前の「あいうえお」再生は廃止)。
+        -- ダブルクリック判定のためにクリック時刻だけ記録する
         self.lastClickAt = now
     end
     event:hit()
@@ -483,12 +653,15 @@ return function(): Node<CharacterAnimation>
         vmTopwearY = nil, vmBackHairY = nil,
         vmBlinkOpen = nil, vmBlinkSmile = nil,
         vmEyeOpenR = nil, vmEyeSmileR = nil, vmFaceRot = nil,
+        vmNeckRot = nil, vmBodyRot = nil, vmBackHairRot = nil,
+        vmBaseRot = nil, vmBaseX = nil, vmBaseY = nil,
         vmFaceX = nil, vmNoseX = nil, vmNoseY = nil,
         vmMouthX = nil, vmMouthY = nil,
         vmBodyX = nil, vmNeckX = nil,
         vmHairX = nil, vmHairY = nil, vmBackHairX = nil,
         vmMouthA = nil, vmMouthI = nil, vmMouthU = nil,
         vmMouthE = nil, vmMouthO = nil, vmMouthClose = nil,
+        vmSingAmp = nil,
         -- カーソル初期値は目の中心に置き、起動直後の正面向きを維持
         mouseX = EYE_WORLD_X, mouseY = EYE_WORLD_Y,
         breathTime = 0,
@@ -501,5 +674,8 @@ return function(): Node<CharacterAnimation>
         mouthOp = {0, 0, 0, 0, 0, 1},
         vowelSeq = {},
         seqPos = 0, seqTimer = 0,
+        singTimer = 0, singVowel = REST_VOWEL, singPhase = 0,
+        singEnv = 0, singActive = false, swayGate = 0,
+        singSmiling = false, singSmileHold = 0, singSmileTimer = 0, singSmileAmt = 0,
     }
 end
