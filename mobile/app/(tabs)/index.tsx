@@ -1,13 +1,11 @@
-import { Platform, StyleSheet, View } from 'react-native';
+import { View } from "react-native";
 
+import { ConversationScreen } from "@/src/features/conversation";
 
-export default function HomeScreen() {
+export default function ConversationIndex() {
   return (
-    <View style={styles.container}>
+    <View style={{ flex: 1 }}>
+      <ConversationScreen />
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-
-});
