@@ -4,7 +4,7 @@ import AudioRecord from "react-native-audio-record";
 import RNFS from "react-native-fs";
 import Sound from "react-native-sound";
 
-import { endSession, onGeminiResponse, sendAudioChunk, startSession } from "../api/socket";
+import { endSession, onGeminiResponse, sendAudioChunk, startSession } from "../services/socket";
 import { useAudioSettings } from "./useAudioSettings";
 import type { GeminiAudioResponse } from "../types";
 

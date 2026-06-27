@@ -4,5 +4,5 @@
  */
 export { useGeminiSession } from "./hooks/useGeminiSession";
 export { useAudioSettings } from "./hooks/useAudioSettings";
-export { sendImageFrame } from "./api/socket";
+export { sendImageFrame } from "./services/socket";
 export type { MediaChunk, GeminiAudioResponse } from "./types";
