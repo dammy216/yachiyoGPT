@@ -1,5 +1,5 @@
 import { io, type Socket } from "socket.io-client";
-import { SERVER_URL } from "@/src/shared/config/env";
+import { SERVER_URL } from "@/shared/config/env";
 import type { GeminiAudioResponse, MediaChunk } from "../types";
 
 /**

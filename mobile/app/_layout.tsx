@@ -1,36 +1,22 @@
-import { DefaultTheme, ThemeProvider } from "@react-navigation/native";
+import { DarkTheme, ThemeProvider } from "@react-navigation/native";
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import React from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
-import { MenuProvider } from "react-native-popup-menu";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 import "react-native-reanimated";
-
-import { HeaderMenu, HeaderTitle } from "@/src/shared/components/HeaderMenu";
-
-export const unstable_settings = {
-  anchor: "(tabs)",
-};
 
 export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <ThemeProvider value={DefaultTheme}>
-        <MenuProvider>
-          <Stack>
-            <Stack.Screen
-              name="(tabs)"
-              options={{
-                headerShown: true,
-                headerStyle: { backgroundColor: "white" },
-                headerTitle: () => <HeaderTitle />,
-                headerRight: () => <HeaderMenu />,
-              }}
-            />
+      <SafeAreaProvider>
+        <ThemeProvider value={DarkTheme}>
+          <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#0c0a24" } }}>
+            <Stack.Screen name="index" />
           </Stack>
-          <StatusBar style="auto" />
-        </MenuProvider>
-      </ThemeProvider>
+          <StatusBar style="light" />
+        </ThemeProvider>
+      </SafeAreaProvider>
     </GestureHandlerRootView>
   );
 }

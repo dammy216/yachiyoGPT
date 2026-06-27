@@ -12,9 +12,6 @@ export type MediaChunk = {
 /** サーバー -> クライアント の Gemini 音声応答（PCM の ArrayBuffer 相当） */
 export type GeminiAudioResponse = ArrayBuffer | Uint8Array | number[];
 
-/** カメラ撮影品質 */
-export type CameraQuality = "speed" | "balanced" | "quality";
-
 /** react-native-audio-record の初期化オプション */
 export type AudioRecordOptions = {
   sampleRate: number;

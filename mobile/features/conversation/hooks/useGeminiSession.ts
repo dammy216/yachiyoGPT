@@ -3,35 +3,24 @@ import { Buffer } from "buffer";
 import AudioRecord from "react-native-audio-record";
 import RNFS from "react-native-fs";
 import Sound from "react-native-sound";
-import type { Camera } from "react-native-vision-camera";
 
-import {
-  endSession,
-  onGeminiResponse,
-  sendAudioChunk,
-  sendImageFrame,
-  startSession,
-} from "../api/socket";
+import { endSession, onGeminiResponse, sendAudioChunk, startSession } from "../api/socket";
 import { useAudioSettings } from "./useAudioSettings";
 import type { GeminiAudioResponse } from "../types";
 
-/** カメラフレームを送信する間隔（ミリ秒） */
-const FRAME_INTERVAL_MS = 300;
-
 /**
- * Gemini とのマルチモーダル会話セッションを統括するフック。
+ * Gemini とのマルチモーダル会話セッション（音声）を統括するフック。
  *
  * - マイク音声(PCM)を Socket.IO 経由でストリーミング
- * - 一定間隔でカメラの JPEG フレームを送信
  * - Gemini からの音声応答を受信して再生
  *
- * UI（カメラプレビューと録音ボタン）からはこのフックだけを使えばよい。
+ * カメラ映像フレームの送信は camera feature の `useFrameStreaming` が担当する。
+ * このフックは「会話中かどうか(isRecording)」を一元管理し、
+ * その状態を見て映像送信のON/OFFが切り替わる。
  */
-export const useGeminiSession = (cameraRef: React.RefObject<Camera | null>) => {
+export const useGeminiSession = () => {
   const audioSetting = useAudioSettings();
-
   const [isRecording, setIsRecording] = useState(false);
-  const frameIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // マイク初期化 & Gemini 応答の受信ハンドラ登録
   useEffect(() => {
@@ -63,50 +52,36 @@ export const useGeminiSession = (cameraRef: React.RefObject<Camera | null>) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** 音声＋画像ストリーミング開始 */
+  // useCallback の依存を増やさず最新の録音状態を参照するためのフラグ
+  const recordingRef = useRef(false);
+
+  /** 音声ストリーミング開始 */
   const start = useCallback(() => {
+    if (recordingRef.current) return;
+    recordingRef.current = true;
     setIsRecording(true);
     startSession();
 
-    // 音声ストリーミング
     AudioRecord.start();
     AudioRecord.on("data", (data: string) => {
       sendAudioChunk(data);
     });
-
-    // 一定間隔でカメラプレビューの JPEG フレームを送信
-    frameIntervalRef.current = setInterval(() => {
-      void (async () => {
-        try {
-          const frame = await cameraRef.current?.takePhoto({ enableShutterSound: false });
-          if (frame) {
-            const base64Frame = await RNFS.readFile(frame.path, "base64");
-            sendImageFrame(base64Frame);
-          }
-        } catch (e) {
-          console.error("画像送信エラー:", e);
-        }
-      })();
-    }, FRAME_INTERVAL_MS);
-  }, [cameraRef]);
+  }, []);
 
   /** ストリーミング停止 */
   const stop = useCallback(() => {
+    if (!recordingRef.current) return;
+    recordingRef.current = false;
     setIsRecording(false);
     AudioRecord.stop();
     endSession();
-
-    if (frameIntervalRef.current) {
-      clearInterval(frameIntervalRef.current);
-      frameIntervalRef.current = null;
-    }
   }, []);
 
   /** ボタン用トグル */
   const toggle = useCallback(() => {
-    if (isRecording) stop();
+    if (recordingRef.current) stop();
     else start();
-  }, [isRecording, start, stop]);
+  }, [start, stop]);
 
   return { isRecording, start, stop, toggle };
 };
