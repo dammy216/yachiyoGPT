@@ -10,8 +10,13 @@ import { StarryBackground, colors } from "@/shared";
 import { BottomControls } from "./BottomControls";
 import { ChatInputBar } from "./ChatInputBar";
 import { Footer } from "./Footer";
-import { SpeechBubble } from "./SpeechBubble";
 import { TopBar } from "./TopBar";
+
+/**
+ * キャラクター表示枠の下端（画面下からのオフセット）。
+ * 返答UIを下部に出しても顔が隠れないよう、やや高め（=大きめ）に取って上に寄せる。
+ */
+const CHARACTER_BOTTOM = 230;
 
 /**
  * アプリのメイン画面。
@@ -27,8 +32,6 @@ export const HomeScreen = () => {
   const { isRecording, toggle } = useGeminiSession();
   const [cameraMode, setCameraMode] = useState(false);
 
-  const showBubble = !cameraMode && !isRecording;
-
   return (
     <View style={styles.root}>
       <StarryBackground />
@@ -36,6 +39,7 @@ export const HomeScreen = () => {
       {cameraMode && <CameraStage isRecording={isRecording} />}
 
       {/* キャラクターは常時マウント。配置だけ切り替える */}
+      {/* 通常モードは角丸フレームで囲み、.riv 側の見切れをフレーム端に揃えて隠す */}
       <View
         style={cameraMode ? styles.thumbWrap : styles.fullWrap}
         pointerEvents={cameraMode ? "none" : "auto"}
@@ -46,14 +50,6 @@ export const HomeScreen = () => {
       {/* UIオーバーレイ。box-none で空き領域のタッチはキャラに通す（目追従などのため） */}
       <SafeAreaView style={styles.overlay} pointerEvents="box-none">
         <TopBar cameraMode={cameraMode} onToggleCamera={() => setCameraMode((v) => !v)} />
-
-        <View style={styles.middle} pointerEvents="box-none">
-          {showBubble && (
-            <View style={styles.bubbleWrap}>
-              <SpeechBubble title="話しかけてみよう！" subtitle="最初のひとことを待ってるよ" />
-            </View>
-          )}
-        </View>
 
         <View style={styles.bottom} pointerEvents="box-none">
           <BottomControls isRecording={isRecording} onToggleMic={toggle} />
@@ -71,9 +67,19 @@ const styles = StyleSheet.create({
     backgroundColor: colors.skyBottom,
   },
   fullWrap: {
-    ...StyleSheet.absoluteFillObject,
-    top: 90,
-    bottom: 150,
+    position: "absolute",
+    top: 110,
+    bottom: CHARACTER_BOTTOM - 20,
+    left: 32,
+    right: 32,
+    // キャラを枠下端に揃える
+    justifyContent: "flex-end",
+    // .riv の見切れをフレーム端でクリップして「意図したフレーム表示」に見せる
+    borderRadius: 28,
+    borderWidth: 1.5,
+    borderColor: colors.glassBorder,
+    backgroundColor: "rgba(255, 255, 255, 0.04)",
+    overflow: "hidden",
   },
   thumbWrap: {
     position: "absolute",
@@ -90,15 +96,6 @@ const styles = StyleSheet.create({
   overlay: {
     flex: 1,
     justifyContent: "space-between",
-  },
-  middle: {
-    flex: 1,
-    justifyContent: "flex-end",
-    paddingHorizontal: 18,
-    paddingBottom: 12,
-  },
-  bubbleWrap: {
-    maxWidth: "75%",
   },
   bottom: {
     gap: 14,

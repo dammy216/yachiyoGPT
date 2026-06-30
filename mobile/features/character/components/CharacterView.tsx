@@ -33,9 +33,10 @@ export const CharacterView = ({ variant = "full", style }: Props) => {
       file={riveFile}
       stateMachineName={STATE_MACHINE}
       autoPlay
-      // サムネは上半身（顔）が見えるよう上寄せ＆カバー、通常は全身を中央表示
+      // サムネは上半身（顔）が見えるよう上寄せ＆カバー。
+      // 通常は素材が粗いため等倍まで引き伸ばさず（高さ80%）、下寄せで地に足がついた配置にする。
       fit={isThumb ? Fit.Cover : Fit.Contain}
-      alignment={isThumb ? Alignment.TopCenter : Alignment.Center}
+      alignment={isThumb ? Alignment.TopCenter : Alignment.BottomCenter}
       style={StyleSheet.flatten([styles.rive, style])}
       onError={(error) => console.error("Rive error:", error.message)}
     />
