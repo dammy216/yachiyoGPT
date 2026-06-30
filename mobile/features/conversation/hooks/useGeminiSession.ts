@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Buffer } from "buffer";
 import AudioRecord from "react-native-audio-record";
 import RNFS from "react-native-fs";
-import Sound from "react-native-sound";
+import { Audio } from "expo-av";
 
 import { endSession, onGeminiResponse, sendAudioChunk, startSession } from "../services/socket";
 import { useAudioSettings } from "./useAudioSettings";
@@ -22,25 +22,56 @@ export const useGeminiSession = () => {
   const audioSetting = useAudioSettings();
   const [isRecording, setIsRecording] = useState(false);
 
+  const audioQueue = useRef<string[]>([]);
+  const isPlaying = useRef(false);
+  const chunkIndex = useRef(0);
+  const playNextRef = useRef<() => Promise<void>>();
+
+  const playNext = useCallback(async () => {
+    const path = audioQueue.current.shift();
+    if (!path) {
+      isPlaying.current = false;
+      return;
+    }
+    isPlaying.current = true;
+    try {
+      const { sound } = await Audio.Sound.createAsync(
+        { uri: `file://${path}` },
+        { shouldPlay: true }
+      );
+      sound.setOnPlaybackStatusUpdate(async (status) => {
+        if (status.isLoaded && status.didJustFinish) {
+          await sound.unloadAsync();
+          RNFS.unlink(path).catch(() => {});
+          playNextRef.current?.();
+        }
+      });
+    } catch (e) {
+      console.error("[audio] 再生エラー:", e);
+      RNFS.unlink(path).catch(() => {});
+      playNextRef.current?.();
+    }
+  }, []);
+
+  playNextRef.current = playNext;
+
   // マイク初期化 & Gemini 応答の受信ハンドラ登録
   useEffect(() => {
+    Audio.setAudioModeAsync({
+      playsInSilentModeIOS: true,
+      allowsRecordingIOS: true,
+    });
     AudioRecord.init(audioSetting);
 
     const handleGeminiAudio = async (audio: GeminiAudioResponse) => {
       try {
-        const path = `${RNFS.CachesDirectoryPath}/gemini_resp.wav`;
-        await RNFS.writeFile(path, Buffer.from(audio as ArrayBuffer).toString("base64"), "base64");
-
-        const sound = new Sound(path, "", (error) => {
-          if (error) {
-            console.error("音声ロードエラー:", error);
-            return;
-          }
-          sound.play((success) => {
-            if (!success) console.error("音声再生に失敗しました");
-            sound.release();
-          });
-        });
+        const pcm = Buffer.from(audio as ArrayBuffer);
+        const wavHeader = createWavHeader(pcm.length);
+        const wav = Buffer.concat([wavHeader, pcm]);
+        const path = `${RNFS.CachesDirectoryPath}/gemini_${chunkIndex.current++}.wav`;
+        await RNFS.writeFile(path, wav.toString("base64"), "base64");
+        audioQueue.current.push(path);
+        if (!isPlaying.current) playNextRef.current?.();
       } catch (e) {
         console.error("Gemini 応答の再生エラー:", e);
       }
@@ -85,3 +116,23 @@ export const useGeminiSession = () => {
 
   return { isRecording, start, stop, toggle };
 };
+
+function createWavHeader(pcmLength: number, sampleRate = 24000, channels = 1, bitsPerSample = 16): Buffer {
+  const header = Buffer.alloc(44);
+  const byteRate = sampleRate * channels * (bitsPerSample / 8);
+  const blockAlign = channels * (bitsPerSample / 8);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + pcmLength, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(pcmLength, 40);
+  return header;
+}

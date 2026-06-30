@@ -5,7 +5,7 @@
  * 開発時は LAN 上の PC の IP に合わせて変更する。
  * TODO: 本番では app.json の extra や EAS の環境変数から注入する。
  */
-export const SERVER_URL = "http://192.168.32.158:8080";
+export const SERVER_URL = "http://192.168.32.164:8080";
 
 /** 外部リンク（ヘッダーメニューから開く） */
 export const EXTERNAL_LINKS = {

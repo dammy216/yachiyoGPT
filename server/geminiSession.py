@@ -2,11 +2,11 @@ from fastapi import FastAPI
 import socketio
 import uvicorn
 from google import genai
+from google.genai import types
 import base64
 import asyncio
 from dotenv import load_dotenv
 import os
-from utils.debugUtils import play_gemini_pcm
 import websockets
 
 
@@ -17,8 +17,8 @@ socket_app = socketio.ASGIApp(sio, app)
 load_dotenv()
 
 # Gemini API 初期化
-client = genai.Client(api_key=os.getenv("API_KEY"), http_options={'api_version': 'v1beta'})
-model_id = "gemini-2.0-flash-live-001"
+client = genai.Client(api_key=os.getenv("API_KEY"))
+model_id = "gemini-3.1-flash-live-preview"
 config = {"response_modalities": ["AUDIO"]}
 
 # 「どのクライアント（＝Socket.IOのsid）が、どのGeminiセッションを持っているか」を管理
@@ -34,19 +34,9 @@ async def handle_session(sid):
         async with client.aio.live.connect(model=model_id, config=config) as session:
             session_map[sid] = session
 
-            # audio_queueをこのセッション専用に作る
-            audio_queue = asyncio.Queue()
-
             # 受信タスク
-            receive_tasks[sid] = asyncio.create_task(receive_from_gemini(session, sid, audio_queue))
-
-            # 再生タスク
-            play_task = asyncio.create_task(play_gemini_pcm(audio_queue))
-
-            # どちらかが終わるまで待つ（どっちも並行でOK）
+            receive_tasks[sid] = asyncio.create_task(receive_from_gemini(session, sid))
             await receive_tasks[sid]
-            # 通常、再生タスクも停止させる必要がある場合はキャンセルしてOK
-            play_task.cancel()
 
     except asyncio.CancelledError:
         print(f"[handle_session] セッション {sid} はキャンセルされました")
@@ -60,13 +50,12 @@ async def handle_session(sid):
 
 # Geminiからの応答を受信する非同期関数
 
-async def receive_from_gemini(session, sid, audio_queue):
+async def receive_from_gemini(session, sid):
     while True:
         try:
             async for response in session.receive():
                 if data := response.data:
                     await sio.emit("gemini_response", data, to=sid)
-                    await audio_queue.put(data)
                 if text := response.text:
                     print(text, end="")
         except websockets.exceptions.ConnectionClosedOK:
@@ -93,7 +82,7 @@ async def send_audio_chunk(sid, data):
         return
 
     audio = base64.b64decode(data["data"])
-    await session.send(input={"mime_type": "audio/pcm", "data": audio})
+    await session.send_realtime_input(audio=types.Blob(data=audio, mime_type="audio/pcm;rate=16000"))
     print(f"[send_audio_chunk] {sid} 音声チャンク送信完了")
         
 # 画像フレームを受geminiに送信するイベント
@@ -104,7 +93,7 @@ async def send_image_frame(sid, data):
         return
 
     image = base64.b64decode(data["data"])
-    await session.send(input={"mime_type": "image/jpeg", "data": image})
+    await session.send_realtime_input(video=types.Blob(data=image, mime_type="image/jpeg"))
     print(f"[send_image_frame] {sid} 画像フレーム送信完了")
 
 # geminiセッション終了イベント
