@@ -7,7 +7,7 @@ import type { GeminiAudioResponse, MediaChunk } from "../types";
  *
  * サーバー側イベント（server/geminiSession.py 参照）:
  *   emit: start_session / send_audio_chunk / send_image_frame / end_session
- *   on  : gemini_response (Gemini の音声 PCM)
+ *   on  : gemini_response (Fish Audio TTS で音声化した MP3 / ターンごとに 1 つ)
  */
 
 /** アプリ全体で 1 本だけ張る Socket.IO コネクション */
@@ -36,7 +36,7 @@ export const sendImageFrame = (data: string): void => {
 };
 
 /**
- * Gemini の音声応答を購読する。
+ * Gemini の応答音声（Fish Audio TTS の MP3）を購読する。
  * 返り値の関数を呼ぶと購読解除できる（useEffect の cleanup 用）。
  */
 export const onGeminiResponse = (
@@ -45,5 +45,13 @@ export const onGeminiResponse = (
   socket.on("gemini_response", handler);
   return () => {
     socket.off("gemini_response", handler);
+  };
+};
+
+/** Gemini のターン完了を購読する */
+export const onTurnComplete = (handler: () => void): (() => void) => {
+  socket.on("turn_complete", handler);
+  return () => {
+    socket.off("turn_complete", handler);
   };
 };

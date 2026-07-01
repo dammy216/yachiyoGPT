@@ -9,7 +9,7 @@ export type MediaChunk = {
   data: string; // base64
 };
 
-/** サーバー -> クライアント の Gemini 音声応答（PCM の ArrayBuffer 相当） */
+/** サーバー -> クライアント の応答音声（Fish Audio TTS の MP3 / ArrayBuffer 相当） */
 export type GeminiAudioResponse = ArrayBuffer | Uint8Array | number[];
 
 /** react-native-audio-record の初期化オプション */

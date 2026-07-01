@@ -4,8 +4,8 @@ import type { Camera } from "react-native-vision-camera";
 
 import { sendImageFrame } from "@/features/conversation";
 
-/** カメラフレームを送信する間隔（ミリ秒） */
-const FRAME_INTERVAL_MS = 300;
+/** カメラフレームを送信する間隔（ミリ秒）。Gemini Live API の上限は 1fps */
+const FRAME_INTERVAL_MS = 1000;
 
 /**
  * `active` の間だけ、一定間隔でカメラの JPEG フレームを Gemini へ送信する。
