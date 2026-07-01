@@ -3,9 +3,9 @@ import { SERVER_URL } from "@/shared/config/env";
 import type { GeminiAudioResponse, MediaChunk } from "../types";
 
 /**
- * server (geminiSession.py) の Socket.IO エンドポイントと話すための薄いラッパー。
+ * server (main.py) の Socket.IO エンドポイントと話すための薄いラッパー。
  *
- * サーバー側イベント（server/geminiSession.py 参照）:
+ * サーバー側イベント（server/features/ の各 slice 参照）:
  *   emit: start_session / send_audio_chunk / send_image_frame / end_session
  *   on  : gemini_response (Fish Audio TTS で音声化した MP3 / ターンごとに 1 つ)
  */
