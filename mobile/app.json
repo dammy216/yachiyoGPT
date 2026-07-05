@@ -54,6 +54,13 @@
           "microphonePermissionText": "Geminiとの会話で音声を使用します。"
         }
       ],
+      [
+        "@config-plugins/react-native-webrtc",
+        {
+          "cameraPermission": "Geminiとの会話でカメラ映像を使用します。",
+          "microphonePermission": "Geminiとの会話で音声を使用します。"
+        }
+      ],
       "expo-audio",
       "expo-asset"
     ],

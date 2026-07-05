@@ -19,6 +19,11 @@ async def end_session(sid, data):
     # 再接続ループを止めてから接続を閉じる
     store.deactivate(sid)
     state = store.get(sid)
-    if state and state.gemini_session:
-        await state.gemini_session.close()
+    if state:
+        if state.gemini_session:
+            await state.gemini_session.close()
+        if state.pc:
+            await state.pc.close()
+            state.pc = None
+            state.tts_track = None
         print(f"[end_session] セッション {sid} を終了しました")

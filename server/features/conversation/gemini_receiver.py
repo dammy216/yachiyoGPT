@@ -30,6 +30,15 @@ async def receive_from_gemini(session, sid: str, handle):
             sc = getattr(response, "server_content", None)
             if not sc:
                 continue
+            # ユーザーの割り込み（バージイン）: 再生中の音声を即座に止める
+            if getattr(sc, "interrupted", False):
+                print(f"\n[receive] {sid} interrupted: 割り込みを検知")
+                if state:
+                    state.text_buffer = ""
+                    if state.synth_task and not state.synth_task.done():
+                        state.synth_task.cancel()
+                    if state.tts_track:
+                        state.tts_track.flush()
             ot = getattr(sc, "output_transcription", None)
             if ot and ot.text:
                 print(ot.text, end="")
@@ -44,7 +53,9 @@ async def receive_from_gemini(session, sid: str, handle):
                 # TTS は受信ループをブロックしないよう別タスクで実行する。
                 # ここでブロックすると Live セッションのターン処理が止まり、
                 # 2 回目以降の応答が受信できなくなる。
-                asyncio.create_task(synthesize_and_emit(sid, text))
+                task = asyncio.create_task(synthesize_and_emit(sid, text))
+                if state:
+                    state.synth_task = task
     except websockets.exceptions.ConnectionClosedOK:
         pass
     return handle

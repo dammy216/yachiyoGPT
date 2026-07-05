@@ -26,6 +26,12 @@ class SessionState:
     synth_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # 会話継続中フラグ（True の間は切断されても再接続する）
     active: bool = False
+    # WebRTC ピア接続（webrtc_offer のたびに差し替わる）
+    pc: Optional[Any] = None
+    # 下り音声トラック（Fish TTS の PCM を流す。割り込み時は flush する）
+    tts_track: Optional[Any] = None
+    # 実行中の TTS タスク（割り込み時にキャンセルする）
+    synth_task: Optional[asyncio.Task] = None
 
 
 class SessionStore:

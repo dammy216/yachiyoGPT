@@ -16,6 +16,7 @@ from settings import HOST, PORT
 import features.connection.events  # noqa: E402,F401
 import features.conversation.events  # noqa: E402,F401
 import features.media_streaming.events  # noqa: E402,F401
+import features.rtc.events  # noqa: E402,F401
 
 if __name__ == "__main__":
     uvicorn.run(socket_app, host=HOST, port=PORT)

@@ -34,8 +34,9 @@ FISH_VOICE_ID = "dce8b25c992d434d80ac6763a3d1e4aa"
 # SDK の型は "s2-pro" 等しか宣言していないが、値はそのまま "model" ヘッダーに
 # 渡されるだけなので、API が受け付ける "s2.1-pro-free" を指定できる。
 FISH_MODEL = "s2.1-pro-free"
-# モバイル側はこの音声ファイルをそのまま再生する
-FISH_FORMAT = "mp3"
+# WAV で受け取り、サーバー側で 48kHz PCM にデコードして WebRTC の
+# 下りトラックへ流す（WAV はヘッダにサンプルレートを持つため誤解釈がない）
+FISH_FORMAT = "wav"
 
 # ------- サーバー -------
 HOST = "0.0.0.0"
