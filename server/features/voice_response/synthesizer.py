@@ -12,12 +12,15 @@ import io
 
 import av
 from av.audio.resampler import AudioResampler
+from fishaudio.types import TTSConfig
 
 from features.rtc.tts_track import SAMPLE_RATE
 from infrastructure.fish_audio_client import fish_client
 from infrastructure.session_store import store
 from infrastructure.socket_server import sio
-from settings import FISH_FORMAT, FISH_MODEL, FISH_VOICE_ID
+from settings import FISH_FORMAT, FISH_MODEL, FISH_SAMPLE_RATE, FISH_VOICE_ID
+
+_TTS_CONFIG = TTSConfig(format=FISH_FORMAT, sample_rate=FISH_SAMPLE_RATE)
 
 
 def _decode_to_track_pcm(audio: bytes) -> bytes:
@@ -50,7 +53,7 @@ async def synthesize_and_emit(sid: str, text: str) -> None:
                     text=text,
                     reference_id=FISH_VOICE_ID,
                     model=FISH_MODEL,
-                    format=FISH_FORMAT,
+                    config=_TTS_CONFIG,
                 )
                 pcm = _decode_to_track_pcm(audio)
                 track = state.tts_track if state else None
