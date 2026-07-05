@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Buffer } from "buffer";
 import AudioRecord from "react-native-audio-record";
 import RNFS from "react-native-fs";
-import { Audio } from "expo-av";
+import { createAudioPlayer, setAudioModeAsync } from "expo-audio";
 
 import { endSession, onGeminiResponse, onTurnComplete, sendAudioChunk, startSession } from "../services/socket";
 import { useAudioSettings } from "./useAudioSettings";
@@ -12,7 +12,7 @@ import type { GeminiAudioResponse } from "../types";
  * Gemini とのマルチモーダル会話セッション（音声）を統括するフック。
  *
  * - マイク音声(PCM)を Socket.IO 経由でストリーミング
- * - Gemini はテキストで応答し、サーバーが Fish Audio TTS で音声化(MP3)した
+ * - Gemini の応答テキストをサーバーが Fish Audio TTS で音声化(MP3)した
  *   ものを受信して再生（ターン完了時に一括スピーカー再生）
  */
 export const useGeminiSession = () => {
@@ -23,7 +23,7 @@ export const useGeminiSession = () => {
   const recordingRef = useRef(false);
 
   useEffect(() => {
-    Audio.setAudioModeAsync({ playsInSilentModeIOS: true, allowsRecordingIOS: true });
+    setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
     AudioRecord.init(audioSetting);
 
     const handleGeminiAudio = (audio: GeminiAudioResponse) => {
@@ -48,26 +48,26 @@ export const useGeminiSession = () => {
         // 録音を一時停止してスピーカーモードに切り替え
         const wasRecording = recordingRef.current;
         if (wasRecording) AudioRecord.stop();
-        await Audio.setAudioModeAsync({ playsInSilentModeIOS: true, allowsRecordingIOS: false });
+        await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: false });
 
-        const sound = new Audio.Sound();
-        // 再生完了の監視は loadAsync より先に登録する（短い音声の取りこぼし防止）
-        sound.setOnPlaybackStatusUpdate(async (status) => {
-          if (status.isLoaded && status.didJustFinish) {
+        const player = createAudioPlayer({ uri: `file://${path}` });
+        // 再生完了の監視は play() より先に登録する（短い音声の取りこぼし防止）
+        const subscription = player.addListener("playbackStatusUpdate", async (status) => {
+          if (status.didJustFinish) {
+            subscription.remove();
             console.log("[audio] 再生完了");
-            await sound.unloadAsync();
+            player.remove();
             RNFS.unlink(path).catch(() => {});
             // 録音モードに戻して録音を再開
-            await Audio.setAudioModeAsync({ playsInSilentModeIOS: true, allowsRecordingIOS: true });
+            await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
             if (wasRecording) AudioRecord.start();
           }
         });
-        await sound.loadAsync({ uri: `file://${path}` });
-        await sound.playAsync();
+        player.play();
       } catch (e) {
         console.error("[audio] 再生エラー:", e);
         RNFS.unlink(path).catch(() => {});
-        await Audio.setAudioModeAsync({ playsInSilentModeIOS: true, allowsRecordingIOS: true });
+        await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
       }
     };
 
