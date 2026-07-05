@@ -54,7 +54,8 @@
           "microphonePermissionText": "Geminiとの会話で音声を使用します。"
         }
       ],
-      "expo-audio"
+      "expo-audio",
+      "expo-asset"
     ],
     "experiments": {
       "typedRoutes": true,
