@@ -32,6 +32,8 @@ class SessionState:
     tts_track: Optional[Any] = None
     # 実行中の TTS タスク（割り込み時にキャンセルする）
     synth_task: Optional[asyncio.Task] = None
+    # 画像フレームを Gemini へ送信中か（詰まったら後続フレームを捨てる）
+    image_sending: bool = False
 
 
 class SessionStore:

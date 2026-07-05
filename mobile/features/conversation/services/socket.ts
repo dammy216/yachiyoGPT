@@ -43,8 +43,8 @@ export const onWebrtcAnswer = (
   };
 };
 
-/** 画像フレーム（base64 JPEG）を送信する */
-export const sendImageFrame = (data: string): void => {
+/** 画像フレーム（JPEG バイナリ）を送信する。base64 より 25% ほど軽い */
+export const sendImageFrame = (data: Uint8Array): void => {
   const chunk: MediaChunk = { mime_type: "image/jpeg", data };
   socket.emit("send_image_frame", chunk);
 };

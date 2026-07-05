@@ -3,7 +3,9 @@ import type { CameraQuality } from "../types";
 
 /**
  * 背面カメラのデバイス・フォーマット・撮影品質をまとめて返す。
- * Gemini へ送るフレームは正方形（1024x1024）・速度優先。
+ * なるべく小さい写真フォーマット・速度優先を要求する（あくまで候補への
+ * ヒントで、実際のサイズは端末依存。送信前に useFrameStreaming 側で
+ * 640px にリサイズするため、ここは撮影を軽くする目的）。
  */
 export const useCameraSettings = () => {
   const device = useCameraDevice("back");
