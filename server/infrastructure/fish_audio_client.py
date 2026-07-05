@@ -1,8 +1,7 @@
-"""Fish Audio TTS クライアント（プロセスで 1 つ）。
-
-FISH_API_KEY を環境変数から自動で読む（settings.py の load_dotenv 済み）。
-"""
+"""Fish Audio TTS クライアント（プロセスで 1 つ）。"""
 
 from fishaudio import AsyncFishAudio
 
-fish_client = AsyncFishAudio()
+from settings import FISH_API_KEY
+
+fish_client = AsyncFishAudio(api_key=FISH_API_KEY)

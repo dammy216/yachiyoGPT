@@ -27,6 +27,7 @@ GEMINI_LIVE_CONFIG = {
 }
 
 # ------- Fish Audio TTS -------
+FISH_API_KEY = os.getenv("FISH_API_KEY")
 # ヤチヨの声: https://fish.audio/m/dce8b25c992d434d80ac6763a3d1e4aa
 FISH_VOICE_ID = "dce8b25c992d434d80ac6763a3d1e4aa"
 # 現在無料で使える s2 pro free。

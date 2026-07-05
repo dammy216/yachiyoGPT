@@ -8,6 +8,28 @@ import { endSession, onGeminiResponse, onTurnComplete, sendAudioChunk, startSess
 import { useAudioSettings } from "./useAudioSettings";
 import type { GeminiAudioResponse } from "../types";
 
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+// mp3 を再生し、再生完了(didJustFinish)まで待つ
+const playFile = (uri: string): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const player = createAudioPlayer({ uri });
+    const subscription = player.addListener("playbackStatusUpdate", (status) => {
+      if (status.didJustFinish) {
+        subscription.remove();
+        player.remove();
+        resolve();
+      }
+    });
+    try {
+      player.play();
+    } catch (e) {
+      subscription.remove();
+      player.remove();
+      reject(e);
+    }
+  });
+
 /**
  * Gemini とのマルチモーダル会話セッション（音声）を統括するフック。
  *
@@ -42,32 +64,35 @@ export const useGeminiSession = () => {
       console.log("[audio] MP3 再生開始:", mp3.length, "bytes");
 
       const path = `${RNFS.CachesDirectoryPath}/gemini_response.mp3`;
+      const uri = `file://${path}`;
+      const wasRecording = recordingRef.current;
       try {
         await RNFS.writeFile(path, mp3.toString("base64"), "base64");
 
-        // 録音を一時停止してスピーカーモードに切り替え
-        const wasRecording = recordingRef.current;
-        if (wasRecording) AudioRecord.stop();
+        // 録音を一時停止してスピーカーモードに切り替え。
+        // 停止直後は AVAudioSession の切り替えがまだ不安定なため少し待つ
+        // （react-native-audio-record と expo-audio が同じセッションを取り合うため）
+        if (wasRecording) {
+          AudioRecord.stop();
+          await sleep(150);
+        }
         await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: false });
 
-        const player = createAudioPlayer({ uri: `file://${path}` });
-        // 再生完了の監視は play() より先に登録する（短い音声の取りこぼし防止）
-        const subscription = player.addListener("playbackStatusUpdate", async (status) => {
-          if (status.didJustFinish) {
-            subscription.remove();
-            console.log("[audio] 再生完了");
-            player.remove();
-            RNFS.unlink(path).catch(() => {});
-            // 録音モードに戻して録音を再開
-            await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
-            if (wasRecording) AudioRecord.start();
-          }
-        });
-        player.play();
+        try {
+          await playFile(uri);
+        } catch (e) {
+          console.warn("[audio] 再生リトライ:", e);
+          await sleep(200);
+          await playFile(uri);
+        }
+        console.log("[audio] 再生完了");
       } catch (e) {
         console.error("[audio] 再生エラー:", e);
+      } finally {
         RNFS.unlink(path).catch(() => {});
+        // 録音モードに戻して録音を再開
         await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
+        if (wasRecording) AudioRecord.start();
       }
     };
 
