@@ -17,7 +17,7 @@ type Props = {
  */
 export const CameraStage = ({ isRecording }: Props) => {
   const { hasPermission, requestPermission } = useCameraPermission();
-  const { device, format, photoQuality } = useCameraSettings();
+  const { device, format } = useCameraSettings();
   const cameraRef = useRef<Camera>(null);
 
   useEffect(() => {
@@ -40,8 +40,7 @@ export const CameraStage = ({ isRecording }: Props) => {
       style={StyleSheet.absoluteFill}
       device={device}
       isActive={true}
-      photo={true}
-      photoQualityBalance={photoQuality}
+      video={true}
       format={format}
     />
   );

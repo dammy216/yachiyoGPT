@@ -9,6 +9,7 @@ Socket.IO サーバーに登録する（import 副作用で登録される）。
 
 import uvicorn
 
+import infrastructure.aiortc_patches  # noqa: F401 (import 副作用で Opus 設定を上書き)
 from infrastructure.socket_server import socket_app
 from settings import HOST, PORT
 

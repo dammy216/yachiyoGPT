@@ -24,10 +24,16 @@ const FRAME_COMPRESS = 0.6;
  * フル解像度のまま送ると 1 枚数 MB になり、同じ Wi-Fi を流れる
  * WebRTC 音声（ヤチヨの声）を圧迫して途切れの原因になる。
  *
- * カメラ側の photoResolution 指定はあくまで「一番近いフォーマットを選ぶ」
+ * カメラ側の videoResolution 指定はあくまで「一番近いフォーマットを選ぶ」
  * ヒントであり、その解像度での撮影を保証しない（実際の解像度は端末依存）。
  * そのため実際に撮れた photo.width を見て、既に 640px 以下ならリサイズを
  * スキップする（拡大してしまうのを防ぐ）。
+ *
+ * 撮影には takePhoto() ではなく takeSnapshot() を使う。takePhoto() は
+ * AVCapturePhotoOutput のフルの静止画撮影パイプラインを毎秒走らせることになり、
+ * これが WebRTC の音声セッションと競合してヤチヨの声が途切れる原因になっていた。
+ * takeSnapshot() はプレビューの映像パイプラインから直接フレームを取るだけなので
+ * 軽量で、音声との競合が起きにくい（iOS では video=true が前提）。
  */
 export const useFrameStreaming = (
   cameraRef: React.RefObject<Camera | null>,
@@ -46,7 +52,7 @@ export const useFrameStreaming = (
         let photoPath: string | null = null;
         let resizedUri: string | null = null;
         try {
-          const photo = await cameraRef.current?.takePhoto({ enableShutterSound: false });
+          const photo = await cameraRef.current?.takeSnapshot({ quality: 90 });
           if (!photo) return;
           photoPath = photo.path;
           console.log(
@@ -75,7 +81,7 @@ export const useFrameStreaming = (
         } catch (e) {
           console.error("画像送信エラー:", e);
         } finally {
-          // takePhoto / リサイズが吐いた一時ファイルはキャッシュに溜まるので消す
+          // takeSnapshot / リサイズが吐いた一時ファイルはキャッシュに溜まるので消す
           if (photoPath) RNFS.unlink(photoPath).catch(() => {});
           if (resizedUri) RNFS.unlink(resizedUri.replace("file://", "")).catch(() => {});
           busyRef.current = false;

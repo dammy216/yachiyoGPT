@@ -49,9 +49,7 @@
       [
         "react-native-vision-camera",
         {
-          "cameraPermissionText": "Geminiとの会話でカメラ映像を使用します。",
-          "enableMicrophonePermission": true,
-          "microphonePermissionText": "Geminiとの会話で音声を使用します。"
+          "cameraPermissionText": "Geminiとの会話でカメラ映像を使用します。"
         }
       ],
       [

@@ -1,7 +1,8 @@
 """slice: conversation — Gemini Live からの応答を受信する（1 接続ぶん）。
 
 Gemini の音声は破棄し、output_transcription（読み上げテキスト）を
-ターンごとに溜めて voice_response の TTS に渡す。
+TurnAudioPipeline に逐次流し込む。ターン完了（turn_complete）を待たず、
+文が確定するたびに Fish Audio TTS を先行して開始できるようにするため。
 接続が閉じたら最新の session_resumption ハンドルを返し、
 呼び出し元（session_runner）が再接続に使う。
 """
@@ -10,12 +11,13 @@ import asyncio
 
 import websockets
 
-from features.voice_response.synthesizer import synthesize_and_emit
+from features.voice_response.synthesizer import TurnAudioPipeline
 from infrastructure.session_store import store
 
 
 async def receive_from_gemini(session, sid: str, handle):
     state = store.get(sid)
+    pipeline = TurnAudioPipeline(state)
     try:
         async for response in session.receive():
             # 再接続用ハンドルを更新
@@ -37,25 +39,36 @@ async def receive_from_gemini(session, sid: str, handle):
                     state.text_buffer = ""
                     if state.synth_task and not state.synth_task.done():
                         state.synth_task.cancel()
-                    if state.tts_track:
-                        state.tts_track.flush()
+                pipeline.cancel()
+                pipeline = TurnAudioPipeline(state)
+                if state and state.tts_track:
+                    state.tts_track.flush()
             ot = getattr(sc, "output_transcription", None)
             if ot and ot.text:
                 print(ot.text, end="")
                 if state:
                     state.text_buffer += ot.text
+                pipeline.feed(ot.text)
             if getattr(sc, "turn_complete", False):
                 text = ""
                 if state:
                     text = state.text_buffer.strip()
                     state.text_buffer = ""
                 print(f"\n[receive] {sid} turn_complete text='{text[:60]}'")
-                # TTS は受信ループをブロックしないよう別タスクで実行する。
+                # 残りのバッファ投入〜TTSはブロックしないよう別タスクで実行する。
                 # ここでブロックすると Live セッションのターン処理が止まり、
                 # 2 回目以降の応答が受信できなくなる。
-                task = asyncio.create_task(synthesize_and_emit(sid, text))
+                finished_pipeline = pipeline
+                pipeline = TurnAudioPipeline(state)
+                task = asyncio.create_task(finished_pipeline.finish(sid))
                 if state:
                     state.synth_task = task
     except websockets.exceptions.ConnectionClosedOK:
         pass
+    finally:
+        # 接続がここで終わる時点で「次のターン用」に作った pipeline は、
+        # 一度も feed/finish されないまま取り残されることがある。
+        # 明示的に cancel しないと _pusher_task が pending のまま GC され、
+        # "Task was destroyed but it is pending!" の警告が出る。
+        pipeline.cancel()
     return handle

@@ -34,6 +34,11 @@ class SessionState:
     synth_task: Optional[asyncio.Task] = None
     # 画像フレームを Gemini へ送信中か（詰まったら後続フレームを捨てる）
     image_sending: bool = False
+    # 「ヤオヨロ~!」「さらば~い!」をこのセッション中にもう使ったか。
+    # プロンプトだけでは1回きりの制約を守り切れないため、synthesizer 側で
+    # 2回目以降を機械的に除去するためのフラグ。
+    greeted: bool = False
+    farewelled: bool = False
 
 
 class SessionStore:
