@@ -7,6 +7,8 @@ TurnAudioPipeline はその断片を受け取るたびにバッファへ足し�
 リクエストを投げる。Gemini がまだ喋り終わっていない段階から音声合成を
 先行させられるため、ターン完了を待つより喋り出しが速い。
 各文の合成は並行に進めつつ、音声投入はキューにより文の順序どおりに行う。
+さらに各文の中でも、Fish から HTTP チャンクが届くたびに逐次リサンプルして
+WebRTC トラックへ push するため、文全体の生成完了を待たずに再生が始まる。
 """
 
 import asyncio
@@ -24,6 +26,7 @@ from infrastructure.socket_server import sio
 from settings import (
     FISH_CHUNK_LENGTH,
     FISH_FORMAT,
+    FISH_LATENCY,
     FISH_MODEL,
     FISH_SAMPLE_RATE,
     FISH_TEMPERATURE,
@@ -37,6 +40,7 @@ _TTS_CONFIG = TTSConfig(
     temperature=FISH_TEMPERATURE,
     top_p=FISH_TOP_P,
     chunk_length=FISH_CHUNK_LENGTH,
+    latency=FISH_LATENCY,
 )
 # Fish Audio (https://fish.audio/ja/ の TTS デモに掲載) が実際に認識するスタイルタグの
 # 一覧。API リファレンスには載っていないが、プロダクトサイトで確認済み。
@@ -58,6 +62,10 @@ _GREETING_RE = re.compile(r"ヤオヨロ[~〜ー!!]*")
 _FAREWELL_RE = re.compile(r"さらば[~〜ー]*い[!!]*")
 
 _BYTES_PER_SAMPLE = 2  # s16 mono
+# 文と文の間に挟む無音の長さ。無いと合成が終わった文から即座に次の文が
+# 始まり、矢継ぎ早に喋っているように聞こえるため、人間の会話らしい
+# 一呼吸分の間を入れる。テンポよく短く返す会話なので、長すぎない値にする。
+_SENTENCE_GAP_SECONDS = 0.2
 
 
 def _split_sentences(text: str) -> list[str]:
@@ -113,33 +121,65 @@ def _apply_greeting_dedup(state: Optional[SessionState], clean_text: str) -> str
     return clean_text
 
 
-def _decode_pcm_to_track_rate(audio: bytes) -> bytes:
-    """Fish の生 PCM (FISH_SAMPLE_RATE, s16 mono) を 48kHz にリサンプルする。"""
-    resampler = AudioResampler(format="s16", layout="mono", rate=SAMPLE_RATE)
+def _resample_to_track_rate(resampler: AudioResampler, audio: bytes) -> bytes:
+    """Fish の生 PCM (FISH_SAMPLE_RATE, s16 mono) の断片を 48kHz にリサンプルする。
+
+    resampler は文単位でステートを持ち、断片をまたぐ補間を連続させる。
+    audio はサンプル境界（2バイト）に揃っていること。
+    """
     samples = len(audio) // _BYTES_PER_SAMPLE
+    if not samples:
+        return b""
+    frame = AudioFrame(format="s16", layout="mono", samples=samples)
+    frame.planes[0].update(audio)
+    frame.sample_rate = FISH_SAMPLE_RATE
     pcm = bytearray()
-    if samples:
-        frame = AudioFrame(format="s16", layout="mono", samples=samples)
-        frame.planes[0].update(audio[: samples * _BYTES_PER_SAMPLE])
-        frame.sample_rate = FISH_SAMPLE_RATE
-        for out in resampler.resample(frame):
-            pcm += out.to_ndarray().tobytes()
+    for out in resampler.resample(frame):
+        pcm += out.to_ndarray().tobytes()
+    return bytes(pcm)
+
+
+def _flush_resampler(resampler: AudioResampler) -> bytes:
+    pcm = bytearray()
     for out in resampler.resample(None):
         pcm += out.to_ndarray().tobytes()
     return bytes(pcm)
 
 
-async def _synthesize_sentence(text: str) -> bytes:
-    stream = await fish_client.tts.stream(
-        text=text,
-        reference_id=FISH_VOICE_ID,
-        model=FISH_MODEL,
-        config=_TTS_CONFIG,
-    )
-    raw = bytearray()
-    async for chunk in stream:
-        raw += chunk
-    return _decode_pcm_to_track_rate(bytes(raw))
+async def _synthesize_sentence(
+    text: str, chunks: "asyncio.Queue[Optional[bytes]]"
+) -> None:
+    """1文を合成し、HTTP チャンクが届くたびにリサンプルして chunks へ流す。
+
+    文全体の生成完了を待たないため、その文の再生開始が速い。
+    終端（またはエラー・キャンセル時）は番兵 None で通知する。
+    """
+    resampler = AudioResampler(format="s16", layout="mono", rate=SAMPLE_RATE)
+    pending = b""  # s16 のサンプル境界（2バイト）に揃えるための持ち越し
+    try:
+        stream = await fish_client.tts.stream(
+            text=text,
+            reference_id=FISH_VOICE_ID,
+            model=FISH_MODEL,
+            config=_TTS_CONFIG,
+        )
+        async for chunk in stream:
+            pending += chunk
+            usable = len(pending) // _BYTES_PER_SAMPLE * _BYTES_PER_SAMPLE
+            if usable:
+                pcm = _resample_to_track_rate(resampler, pending[:usable])
+                pending = pending[usable:]
+                if pcm:
+                    chunks.put_nowait(pcm)
+        tail = _flush_resampler(resampler)
+        if tail:
+            chunks.put_nowait(tail)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        print(f"[TurnAudioPipeline] TTS エラー: {e}")
+    finally:
+        chunks.put_nowait(None)
 
 
 class TurnAudioPipeline:
@@ -153,7 +193,12 @@ class TurnAudioPipeline:
     def __init__(self, state: Optional[SessionState]) -> None:
         self._state = state
         self._buffer = ""
-        self._queue: asyncio.Queue[Optional[asyncio.Task]] = asyncio.Queue()
+        # 文ごとに (合成タスク, チャンクキュー) を積む。合成は並行に進み、
+        # 音声チャンクは各文のキューへ溜まる。_pusher が文の順序どおりに
+        # キューを消費することで、再生順を保証しつつ逐次 push できる。
+        self._queue: asyncio.Queue[
+            Optional[tuple[asyncio.Task, "asyncio.Queue[Optional[bytes]]"]]
+        ] = asyncio.Queue()
         self._current_task: Optional[asyncio.Task] = None
         self._pusher_task = asyncio.create_task(self._pusher())
 
@@ -167,7 +212,9 @@ class TurnAudioPipeline:
         clean = _filter_style_tags(raw_sentence)
         clean = _apply_greeting_dedup(self._state, clean)
         if clean:
-            self._queue.put_nowait(asyncio.create_task(_synthesize_sentence(clean)))
+            chunks: asyncio.Queue[Optional[bytes]] = asyncio.Queue()
+            task = asyncio.create_task(_synthesize_sentence(clean, chunks))
+            self._queue.put_nowait((task, chunks))
 
     async def finish(self, sid: str) -> None:
         """残りのバッファを最後の文として確定し、全チャンクの投入完了を待つ。"""
@@ -187,23 +234,29 @@ class TurnAudioPipeline:
         while not self._queue.empty():
             item = self._queue.get_nowait()
             if item is not None:
-                item.cancel()
+                item[0].cancel()
 
     async def _pusher(self) -> None:
+        first = True
         while True:
-            task = await self._queue.get()
-            if task is None:
+            item = await self._queue.get()
+            if item is None:
                 break
+            if not first:
+                # 前の文の再生後、次の文を流す前に一呼吸置く。この間 track
+                # には何も push しないので、TTSAudioTrack が自動で無音を流す。
+                await asyncio.sleep(_SENTENCE_GAP_SECONDS)
+            first = False
+            task, chunks = item
             self._current_task = task
             try:
-                pcm = await task
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                print(f"[TurnAudioPipeline] TTS エラー: {e}")
-                continue
+                # 文の合成完了を待たず、届いたチャンクから順に流す
+                while True:
+                    pcm = await chunks.get()
+                    if pcm is None:
+                        break
+                    track = self._state.tts_track if self._state else None
+                    if track:
+                        track.push(pcm)
             finally:
                 self._current_task = None
-            track = self._state.tts_track if self._state else None
-            if track and pcm:
-                track.push(pcm)

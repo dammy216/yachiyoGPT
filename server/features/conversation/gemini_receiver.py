@@ -43,6 +43,11 @@ async def receive_from_gemini(session, sid: str, handle):
                 pipeline = TurnAudioPipeline(state)
                 if state and state.tts_track:
                     state.tts_track.flush()
+                # interrupted と同じメッセージに乗ってくる output_transcription は
+                # 割り込まれた直前ターンの残りテキストであり、次のターンの発言では
+                # ない。ここで処理すると新しい pipeline に古い回答の続きが混入し、
+                # 割り込み直後にヤチヨが前の回答を繰り返す原因になるため捨てる。
+                continue
             ot = getattr(sc, "output_transcription", None)
             if ot and ot.text:
                 print(ot.text, end="")
