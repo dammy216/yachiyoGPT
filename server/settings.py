@@ -163,8 +163,8 @@ FISH_SAMPLE_RATE = 44100
 FISH_CHUNK_LENGTH = 200
 # temperature/top_p はデフォルト共に0.7。下げるほど生成のランダム性が減り、
 # 学習元の声質・話し方に忠実で安定した発音になる（下げすぎると抑揚が単調になる）。
-FISH_TEMPERATURE = 0.6
-FISH_TOP_P = 0.6
+FISH_TEMPERATURE = 0.78
+FISH_TOP_P = 0.78
 # "normal"（高品質・低速）/ "balanced"（高速・並、デフォルト）の2択。
 # "normal" は1文目（喋り出し）の遅延が体感できるレベルだったため、
 # 速度優先の "balanced" に戻す。
