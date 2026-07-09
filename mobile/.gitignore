@@ -30,7 +30,8 @@ yarn-error.*
 .DS_Store
 *.pem
 
-# local env files
+# env files (実際の接続先はコミットしない。テンプレートは .env.example)
+.env
 .env*.local
 
 # typescript

@@ -2,10 +2,15 @@
  * アプリ全体で使う環境設定。
  *
  * SERVER_URL は server フォルダ（FastAPI + Socket.IO / Gemini Live）の接続先。
- * 開発時は LAN 上の PC の IP に合わせて変更する。
- * TODO: 本番では app.json の extra や EAS の環境変数から注入する。
+ * mobile/.env（.env.example をコピーして作成、gitignore 対象）の
+ * EXPO_PUBLIC_SERVER_URL を LAN 上の PC の IP に合わせて設定する。
  */
-export const SERVER_URL = "http://192.168.32.164:8080";
+if (!process.env.EXPO_PUBLIC_SERVER_URL) {
+  throw new Error(
+    "EXPO_PUBLIC_SERVER_URL が未設定です。mobile/.env.example を mobile/.env にコピーし、LAN上のサーバーPCのIPを設定してください。"
+  );
+}
+export const SERVER_URL = process.env.EXPO_PUBLIC_SERVER_URL;
 
 /** 外部リンク（ヘッダーメニューから開く） */
 export const EXTERNAL_LINKS = {
