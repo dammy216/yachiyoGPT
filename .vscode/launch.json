@@ -29,7 +29,7 @@
       "cwd": "${workspaceFolder}/rive/scripts"
     },
     {
-      "command": "npm run dev",
+      "command": "bun run dev",
       "name": "web",
       "request": "launch",
       "type": "node-terminal",

@@ -34,6 +34,7 @@ rive/            # Rive 素材 + Luau スクリプト
 ## コマンド
 
 各アプリは独立した依存を持つ。作業対象のディレクトリ内で実行する。
+パッケージマネージャは mobile（Expo）が npm、yoccie-homepage は **bun**。
 
 ### mobile（Expo）
 ```
@@ -55,12 +56,13 @@ uvicorn main:socket_app --host 0.0.0.0 --port 8080 --reload
 `fastapi`, `uvicorn`, `python-dotenv`, `websockets`, `fishaudio`, `numpy`。
 `server/.env` に `API_KEY`（Gemini）と `FISH_API_KEY` を置く（gitignore 済み）。
 
-### yoccie-homepage（Next.js）
+### yoccie-homepage（Next.js / bun）
 ```
 cd yoccie-homepage
-npm run dev          # 開発サーバー
-npm run build        # 本番ビルド
-npm run lint
+bun install          # 依存インストール（bun.lock を生成/更新）
+bun run dev          # 開発サーバー
+bun run build        # 本番ビルド
+bun run lint
 ```
 
 ## エンドツーエンドのデータフロー（mobile 会話モード）
